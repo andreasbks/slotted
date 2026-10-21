@@ -3,15 +3,19 @@
 import React, { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft,
   ArrowUpRight,
   Calendar,
   Check,
+  ChevronDown,
   Clock,
   Copy,
   CornerDownLeft,
+  EyeOff,
   Globe,
+  KeyRound,
   SlidersHorizontal,
   Trash2,
   Users,
@@ -20,43 +24,52 @@ import {
   BrushMode,
   INITIAL_POLLS,
   PollData,
+  PollMode,
   STORAGE_KEY_GUEST,
+  STORAGE_KEY_HOST_TOKENS,
+  STORAGE_KEY_POLLS,
   STORAGE_KEY_TZ,
   TIMEZONE_OPTIONS,
+  VisibilityMode,
   computeRankedWindows,
   formatDateHeader,
+  formatDurationBadge,
   formatMinutesToDisplay,
-  loadStoredPolls,
-  parseNaturalLanguagePoll,
-  saveStoredPolls,
+  getOrCreateGuestSessionId,
 } from "@/lib/slotted-data";
 import { PollWorkspace } from "./poll-workspace";
 
-const MANUAL_CALENDAR_DAYS = [
-  { iso: "2026-10-26", day: "Mon", num: "26", month: "Oct" },
-  { iso: "2026-10-27", day: "Tue", num: "27", month: "Oct" },
-  { iso: "2026-10-28", day: "Wed", num: "28", month: "Oct" },
-  { iso: "2026-10-29", day: "Thu", num: "29", month: "Oct" },
-  { iso: "2026-10-30", day: "Fri", num: "30", month: "Oct" },
-  { iso: "2026-11-02", day: "Mon", num: "02", month: "Nov" },
-  { iso: "2026-11-03", day: "Tue", num: "03", month: "Nov" },
-  { iso: "2026-11-04", day: "Wed", num: "04", month: "Nov" },
-  { iso: "2026-11-05", day: "Thu", num: "05", month: "Nov" },
-  { iso: "2026-11-06", day: "Fri", num: "06", month: "Nov" },
+const CALENDAR_GRID_DAYS = [
+  { iso: "2026-10-26", day: "Mon", num: "26", month: "Oct", weekend: false },
+  { iso: "2026-10-27", day: "Tue", num: "27", month: "Oct", weekend: false },
+  { iso: "2026-10-28", day: "Wed", num: "28", month: "Oct", weekend: false },
+  { iso: "2026-10-29", day: "Thu", num: "29", month: "Oct", weekend: false },
+  { iso: "2026-10-30", day: "Fri", num: "30", month: "Oct", weekend: true },
+  { iso: "2026-10-31", day: "Sat", num: "31", month: "Oct", weekend: true },
+  { iso: "2026-11-01", day: "Sun", num: "01", month: "Nov", weekend: true },
+  { iso: "2026-11-02", day: "Mon", num: "02", month: "Nov", weekend: false },
+  { iso: "2026-11-03", day: "Tue", num: "03", month: "Nov", weekend: false },
+  { iso: "2026-11-04", day: "Wed", num: "04", month: "Nov", weekend: false },
+  { iso: "2026-11-05", day: "Thu", num: "05", month: "Nov", weekend: false },
+  { iso: "2026-11-06", day: "Fri", num: "06", month: "Nov", weekend: true },
+  { iso: "2026-11-07", day: "Sat", num: "07", month: "Nov", weekend: true },
+  { iso: "2026-11-08", day: "Sun", num: "08", month: "Nov", weekend: true },
 ];
 
 interface SlottedAppShellProps {
   initialSlug?: string;
   initialViewMode?: "landing" | "poll";
   initialLocked?: boolean;
-  initialManualMode?: boolean;
+  initialAdvancedOpen?: boolean;
+  initialCreated?: boolean;
 }
 
 export function SlottedAppShell({
   initialSlug,
   initialViewMode = "landing",
   initialLocked = false,
-  initialManualMode = false,
+  initialAdvancedOpen = false,
+  initialCreated = false,
 }: SlottedAppShellProps) {
   const router = useRouter();
 
@@ -78,40 +91,77 @@ export function SlottedAppShell({
     useState<string>("America/New_York");
   const [activeBrush, setActiveBrush] = useState<BrushMode>("available");
   const [copiedPollId, setCopiedPollId] = useState<string | null>(null);
+  const [justCreatedFlag, setJustCreatedFlag] =
+    useState<boolean>(initialCreated);
 
-  // Composer state
-  const [promptText, setPromptText] = useState<string>("");
-  const [manualMode, setManualMode] = useState<boolean>(initialManualMode);
-
-  // Manual configuration fields
-  const [manualTitle, setManualTitle] = useState<string>(
-    "Q4 Architecture Sync"
-  );
-  const [manualDates, setManualDates] = useState<string[]>([
+  // Direct Creation Modal State (Zero conversational prompt box)
+  const [pollTitle, setPollTitle] = useState<string>("");
+  const [pollMode, setPollMode] = useState<PollMode>("dates_and_hours");
+  const [selectedDates, setSelectedDates] = useState<string[]>([
     "2026-10-27",
     "2026-10-28",
     "2026-10-29",
   ]);
-  const [manualStartHour, setManualStartHour] = useState<number>(9);
-  const [manualEndHour, setManualEndHour] = useState<number>(17);
-  const [manualDuration, setManualDuration] = useState<number>(30);
+  const [startHour, setStartHour] = useState<number>(9);
+  const [endHour, setEndHour] = useState<number>(17);
+
+  // Drag-selecting dates on the creation calendar
+  const [draggingCalendar, setDraggingCalendar] = useState<boolean>(false);
+  const [dragCalendarAction, setDragCalendarAction] = useState<
+    "add" | "remove"
+  >("add");
+
+  // Advanced Settings Disclosure State
+  const [advancedOpen, setAdvancedOpen] =
+    useState<boolean>(initialAdvancedOpen);
+  const [durationMinutes, setDurationMinutes] = useState<number>(30);
+  const [passwordProtected, setPasswordProtected] = useState<boolean>(false);
+  const [accessPassword, setAccessPassword] = useState<string>("");
+  const [visibilityMode, setVisibilityMode] =
+    useState<VisibilityMode>("public");
+  const [allowIfNeeded, setAllowIfNeeded] = useState<boolean>(true);
+  const [deadlineAt, setDeadlineAt] = useState<string>("");
+
+  // Creation microanimation state before routing
+  const [creatingState, setCreatingState] = useState<
+    "idle" | "creating" | "copied"
+  >("idle");
+  const [createdSlugPreview, setCreatedSlugPreview] = useState<string | null>(
+    null
+  );
 
   useEffect(() => {
-    setManualMode(initialManualMode);
-  }, [initialManualMode]);
+    setAdvancedOpen(initialAdvancedOpen);
+  }, [initialAdvancedOpen]);
 
-  // Hydrate from localStorage on mount
+  // Fetch live polls from server API on mount + merge local storage
   useEffect(() => {
-    const stored = loadStoredPolls();
-    if (initialLocked && initialSlug) {
-      setPolls(
-        stored.map((p) =>
-          p.slug === initialSlug ? { ...p, status: "LOCKED" } : p
-        )
-      );
-    } else {
-      setPolls(stored);
+    let cancelled = false;
+
+    async function loadFromServer() {
+      try {
+        const res = await fetch("/api/polls", { cache: "no-store" });
+        if (res.ok) {
+          const data = await res.json();
+          if (!cancelled && Array.isArray(data.polls) && data.polls.length > 0) {
+            const list: PollData[] = data.polls;
+            if (initialLocked && initialSlug) {
+              setPolls(
+                list.map((p) =>
+                  p.slug === initialSlug ? { ...p, status: "LOCKED" } : p
+                )
+              );
+            } else {
+              setPolls(list);
+            }
+          }
+        }
+      } catch {
+        // Fallback to localStorage if offline
+      }
     }
+
+    loadFromServer();
 
     try {
       const g = localStorage.getItem(STORAGE_KEY_GUEST);
@@ -121,32 +171,88 @@ export function SlottedAppShell({
         setViewerTimezone(tz);
       }
     } catch {}
+
+    return () => {
+      cancelled = true;
+    };
   }, [initialLocked, initialSlug]);
 
-  const parsedPrompt = useMemo(
-    () => parseNaturalLanguagePoll(promptText),
-    [promptText]
-  );
+  // Global pointerup for calendar drag
+  useEffect(() => {
+    if (!draggingCalendar) return;
+    const stop = () => setDraggingCalendar(false);
+    window.addEventListener("pointerup", stop);
+    return () => window.removeEventListener("pointerup", stop);
+  }, [draggingCalendar]);
 
-  const handleToggleManualMode = () => {
-    if (!manualMode && promptText.trim().length > 0) {
-      setManualTitle(parsedPrompt.title);
-      setManualDates(parsedPrompt.candidateDates);
-      setManualStartHour(parsedPrompt.dayStartHour);
-      setManualEndHour(parsedPrompt.dayEndHour);
-      setManualDuration(parsedPrompt.durationMinutes);
+  const handleSwitchPollMode = (nextMode: PollMode) => {
+    setPollMode(nextMode);
+    if (nextMode === "full_days") {
+      setDurationMinutes(1440); // Default 1 full day (or user can pick 2d / 3d)
+      setSelectedDates(["2026-10-30", "2026-10-31", "2026-11-01"]);
+    } else {
+      if (durationMinutes >= 1440) {
+        setDurationMinutes(30);
+      }
+      setSelectedDates(["2026-10-27", "2026-10-28", "2026-10-29"]);
     }
-    setManualMode((prev) => !prev);
   };
 
-  const toggleManualDate = (iso: string) => {
-    setManualDates((prev) =>
-      prev.includes(iso)
-        ? prev.length > 1
-          ? prev.filter((d) => d !== iso)
-          : prev
-        : [...prev, iso].sort()
-    );
+  const applyQuickPreset = (
+    preset: "call_30m" | "dinner_2h" | "weekend_trip" | "next_week"
+  ) => {
+    if (preset === "call_30m") {
+      setPollMode("dates_and_hours");
+      setSelectedDates(["2026-10-27", "2026-10-28", "2026-10-29"]);
+      setStartHour(9);
+      setEndHour(17);
+      setDurationMinutes(30);
+      if (!pollTitle) setPollTitle("30m Intro Call");
+    } else if (preset === "dinner_2h") {
+      setPollMode("dates_and_hours");
+      setSelectedDates(["2026-10-28", "2026-10-29", "2026-10-30"]);
+      setStartHour(18);
+      setEndHour(22);
+      setDurationMinutes(120);
+      if (!pollTitle) setPollTitle("Team Dinner");
+    } else if (preset === "weekend_trip") {
+      setPollMode("full_days");
+      setSelectedDates(["2026-10-30", "2026-10-31", "2026-11-01"]);
+      setDurationMinutes(4320); // 3 days
+      if (!pollTitle) setPollTitle("Weekend Group Trip");
+    } else if (preset === "next_week") {
+      setSelectedDates([
+        "2026-11-02",
+        "2026-11-03",
+        "2026-11-04",
+        "2026-11-05",
+        "2026-11-06",
+      ]);
+    }
+  };
+
+  const handleDatePointerDown = (iso: string) => {
+    const isCurrentlySelected = selectedDates.includes(iso);
+    const action = isCurrentlySelected ? "remove" : "add";
+    setDragCalendarAction(action);
+    setDraggingCalendar(true);
+
+    setSelectedDates((prev) => {
+      if (action === "remove") {
+        return prev.length > 1 ? prev.filter((d) => d !== iso) : prev;
+      }
+      return prev.includes(iso) ? prev : [...prev, iso].sort();
+    });
+  };
+
+  const handleDatePointerEnter = (iso: string) => {
+    if (!draggingCalendar) return;
+    setSelectedDates((prev) => {
+      if (dragCalendarAction === "remove") {
+        return prev.length > 1 ? prev.filter((d) => d !== iso) : prev;
+      }
+      return prev.includes(iso) ? prev : [...prev, iso].sort();
+    });
   };
 
   const activePoll = useMemo(() => {
@@ -156,21 +262,19 @@ export function SlottedAppShell({
   const handleUpdatePoll = (updated: PollData) => {
     setPolls((prev) => {
       const next = prev.map((p) => (p.id === updated.id ? updated : p));
-      saveStoredPolls(next);
+      try {
+        localStorage.setItem(STORAGE_KEY_POLLS, JSON.stringify(next));
+      } catch {}
       return next;
     });
   };
 
-  const handleDeletePoll = (id: string) => {
-    setPolls((prev) => {
-      if (prev.length <= 1) return prev;
-      const next = prev.filter((p) => p.id !== id);
-      saveStoredPolls(next);
-      if (activePoll.id === id) {
-        setActiveSlug(next[0].slug);
-      }
-      return next;
-    });
+  const handleDeletePoll = async (slug: string, id: string) => {
+    if (polls.length <= 1) return;
+    setPolls((prev) => prev.filter((p) => p.id !== id));
+    try {
+      await fetch(`/api/polls/${slug}`, { method: "DELETE" });
+    } catch {}
   };
 
   const handleChangeGuestName = (name: string) => {
@@ -187,118 +291,81 @@ export function SlottedAppShell({
     } catch {}
   };
 
-  const handleCreatePoll = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
+  const handleCreatePoll = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (creatingState !== "idle") return;
 
-    const title = manualMode
-      ? manualTitle.trim() || "Untitled Poll"
-      : parsedPrompt.title;
-    const candidateDates = manualMode
-      ? manualDates
-      : parsedPrompt.candidateDates;
-    const dayStartHour = manualMode
-      ? manualStartHour
-      : parsedPrompt.dayStartHour;
-    const dayEndHour = manualMode
-      ? Math.max(manualStartHour + 2, manualEndHour)
-      : parsedPrompt.dayEndHour;
-    const durationMinutes = manualMode
-      ? manualDuration
-      : parsedPrompt.durationMinutes;
+    setCreatingState("creating");
+    const finalTitle =
+      pollTitle.trim() ||
+      (pollMode === "full_days" ? "Group Trip" : "Team Sync");
+    const sessionId = getOrCreateGuestSessionId();
 
-    const slugBase = title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "")
-      .slice(0, 28);
-    const slug = `${slugBase || "poll"}-${Math.floor(
-      100 + Math.random() * 899
-    )}`;
-
-    const d0 = candidateDates[0];
-    const d1 = candidateDates[1] || candidateDates[0];
-    const h1 = String(dayStartHour + 1).padStart(2, "0");
-    const h2 = String(Math.min(dayEndHour - 1, dayStartHour + 2)).padStart(
-      2,
-      "0"
-    );
-
-    const extractedNames =
-      !manualMode && parsedPrompt.participantsExtracted.length > 0
-        ? parsedPrompt.participantsExtracted
-        : ["Elena", "Sam"];
-
-    const newPoll: PollData = {
-      id: `pol_${Date.now().toString(36)}`,
-      slug,
-      title,
-      description: `${String(dayStartHour).padStart(2, "0")}:00–${String(
-        dayEndHour
-      ).padStart(2, "0")}:00 · ${durationMinutes}m`,
-      themeTint: "linen",
-      hostName: guestName || "Alex",
-      timezone: viewerTimezone,
-      candidateDates,
-      dayStartHour,
-      dayEndHour,
-      slotMinutes: 30,
-      durationMinutes,
-      status: "OPEN",
-      lockedLocation: `meet.slotted.app/${slugBase || "room"}`,
-      reactions: [],
-      participants: [
-        {
-          id: "p_gen_1",
-          guestSessionId: "slt_gen_1",
-          name: extractedNames[0] || "Elena",
-          city: "SF",
-          timezone: "America/Los_Angeles",
-          avatarColor: "#10B981",
-          slots: {
-            [`${d0}T${h1}:00`]: "available",
-            [`${d0}T${h1}:30`]: "available",
-            [`${d1}T${h1}:00`]: "available",
-            [`${d1}T${h1}:30`]: "available",
-            [`${d1}T${h2}:00`]: "available",
-          },
-        },
-        {
-          id: "p_gen_2",
-          guestSessionId: "slt_gen_2",
-          name: extractedNames[1] || "Sam",
-          city: "London",
-          timezone: "Europe/London",
-          avatarColor: "#D97706",
-          slots: {
-            [`${d0}T${h1}:00`]: "if_needed",
-            [`${d0}T${h1}:30`]: "if_needed",
-            [`${d1}T${h1}:00`]: "available",
-            [`${d1}T${h1}:30`]: "available",
-            [`${d1}T${h2}:00`]: "available",
-          },
-        },
-        {
-          id: "p_gen_you",
-          guestSessionId: "slt_guest_local",
-          name: guestName || "Alex",
-          city: "NYC",
+    try {
+      const res = await fetch("/api/polls", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: finalTitle,
+          pollMode,
+          hostName: guestName || "Alex",
+          guestSessionId: sessionId,
           timezone: viewerTimezone,
-          avatarColor: "#141413",
-          isCurrentUser: true,
-          slots: {
-            [`${d1}T${h1}:00`]: "available",
-            [`${d1}T${h1}:30`]: "available",
-          },
-        },
-      ],
-    };
+          candidateDates: selectedDates,
+          dayStartHour: startHour,
+          dayEndHour: Math.max(startHour + 2, endHour),
+          slotMinutes: 30,
+          durationMinutes,
+          accessPassword:
+            passwordProtected && accessPassword.trim()
+              ? accessPassword.trim()
+              : null,
+          visibilityMode,
+          allowIfNeeded,
+          deadlineAt: deadlineAt || null,
+        }),
+      });
 
-    const nextPolls = [newPoll, ...polls];
-    setPolls(nextPolls);
-    saveStoredPolls(nextPolls);
-    setActiveSlug(newPoll.slug);
-    setViewMode("poll");
-    router.push(`/p/${newPoll.slug}`);
+      if (res.ok) {
+        const { poll, hostToken } = (await res.json()) as {
+          poll: PollData;
+          hostToken: string;
+        };
+
+        // Copy share link immediately
+        const shareUrl =
+          typeof window !== "undefined"
+            ? `${window.location.origin}/p/${poll.slug}`
+            : `https://slotted.app/p/${poll.slug}`;
+        if (typeof navigator !== "undefined" && navigator.clipboard) {
+          navigator.clipboard.writeText(shareUrl).catch(() => {});
+        }
+
+        // Save hostToken locally
+        try {
+          const rawTokens = localStorage.getItem(STORAGE_KEY_HOST_TOKENS);
+          const map = rawTokens ? JSON.parse(rawTokens) : {};
+          map[poll.slug] = hostToken;
+          localStorage.setItem(STORAGE_KEY_HOST_TOKENS, JSON.stringify(map));
+        } catch {}
+
+        setPolls((prev) => [poll, ...prev]);
+        setCreatedSlugPreview(poll.slug);
+        setCreatingState("copied");
+
+        // Show satisfying microanimation for 550ms then transition to the new poll page
+        setTimeout(() => {
+          setActiveSlug(poll.slug);
+          setJustCreatedFlag(true);
+          setViewMode("poll");
+          setCreatingState("idle");
+          router.push(`/p/${poll.slug}?created=1`);
+        }, 550);
+        return;
+      }
+    } catch {}
+
+    setCreatingState("idle");
   };
 
   const handleCopyPollLink = (slug: string, id: string) => {
@@ -317,18 +384,18 @@ export function SlottedAppShell({
     TIMEZONE_OPTIONS.find((t) => t.id === viewerTimezone) || TIMEZONE_OPTIONS[1];
 
   /* =========================================================
-     FOCUSED POLL VIEW (/p/[slug])
+     POLL VIEW (/p/[slug]) — Matching Rounded-[24px] Design System
      ========================================================= */
   if (viewMode === "poll") {
     return (
       <div className="min-h-dvh flex flex-col bg-[#F6F5F2] text-[#141413]">
-        <header className="border-b border-[#E2E0D8] bg-[#F6F5F2]">
-          <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-4 sm:px-6">
+        <header className="border-b border-[#E4E2DA] bg-[#F6F5F2]">
+          <div className="mx-auto flex h-16 max-w-5xl items-center justify-between px-4 sm:px-6">
             <div className="flex items-center gap-3">
               <Link
                 href="/"
                 onClick={() => setViewMode("landing")}
-                className="flex items-center gap-2 font-mono text-sm font-semibold tracking-tight text-[#141413]"
+                className="flex items-center gap-2.5 font-mono text-sm font-semibold tracking-tight text-[#141413]"
               >
                 <span className="flex h-6 w-6 items-center justify-center rounded-lg bg-[#141413] text-[#F6F5F2]">
                   <span className="flex gap-0.5">
@@ -348,23 +415,27 @@ export function SlottedAppShell({
               <Link
                 href="/"
                 onClick={() => setViewMode("landing")}
-                className="inline-flex items-center gap-1.5 rounded-xl border border-[#E2E0D8] bg-white px-3 py-1.5 text-xs font-medium text-[#141413] hover:bg-[#EFECE6] transition"
+                className="inline-flex items-center gap-1.5 rounded-full border border-[#E4E2DA] bg-white px-3.5 py-1.5 text-xs font-medium text-[#141413] hover:bg-[#EFECE6] transition"
               >
                 <ArrowLeft className="h-3.5 w-3.5" />
-                <span>New / My polls ({polls.length})</span>
+                <span>New poll</span>
               </Link>
 
-              <div className="hidden sm:inline-flex items-center gap-1 rounded-xl border border-[#E2E0D8] bg-[#FAF9F6] px-3 py-1.5 text-[11px] text-[#575550] tabular-nums">
-                <Globe className="h-3 w-3 text-[#8A8780]" />
-                <span>
-                  {currentTzOption.shortCode} · {currentTzOption.utcLabel}
+              <Link
+                href="/#my-polls"
+                onClick={() => setViewMode("landing")}
+                className="inline-flex items-center gap-1.5 rounded-full border border-[#E4E2DA] bg-[#FAF9F6] px-3.5 py-1.5 text-xs font-medium text-[#575550] hover:text-[#141413] transition"
+              >
+                <span>My polls</span>
+                <span className="rounded-full bg-[#EFECE6] px-1.5 py-0.2 text-[10px] text-[#141413] tabular-nums">
+                  {polls.length}
                 </span>
-              </div>
+              </Link>
             </div>
           </div>
         </header>
 
-        <main className="mx-auto w-full max-w-5xl flex-1 px-3 py-6 sm:px-6">
+        <main className="mx-auto w-full max-w-5xl flex-1 px-4 py-6 sm:px-6 sm:py-8">
           <PollWorkspace
             poll={activePoll}
             onUpdatePoll={handleUpdatePoll}
@@ -374,6 +445,7 @@ export function SlottedAppShell({
             onChangeViewerTimezone={handleChangeTimezone}
             activeBrush={activeBrush}
             onChangeBrush={setActiveBrush}
+            justCreated={justCreatedFlag}
           />
         </main>
       </div>
@@ -382,12 +454,12 @@ export function SlottedAppShell({
 
   /* =========================================================
      HOME VIEW (/):
-     1. 100dvh Fullscreen Darkened Classical Landscape + Rounder Creation Box
-     2. Below the fold: Single-Tone Grainy Flat "My polls"
+     1. 100dvh Fullscreen Darkened Classical Landscape + Direct Creation Modal
+     2. Below the fold: Single-Tone Flat Background with "My polls"
      ========================================================= */
   return (
     <div className="min-h-dvh flex flex-col bg-[#F6F5F2] text-[#141413]">
-      {/* FIRST SIGHT: FULLSCREEN DARKENED LANDSCAPE + CREATION BOX ONLY */}
+      {/* FIRST SIGHT: FULLSCREEN DARKENED LANDSCAPE + DIRECT CREATION MODAL ONLY */}
       <section className="relative flex min-h-dvh w-full flex-col justify-between overflow-hidden">
         {/* Fullscreen Landscape Painting */}
         <img
@@ -400,11 +472,11 @@ export function SlottedAppShell({
         {/* Darkening Scrim & Atmospheric Vignette */}
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-black/38"
+          className="pointer-events-none absolute inset-0 bg-black/40"
         />
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/35 via-black/25 to-black/55"
+          className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/35 via-black/25 to-black/60"
         />
 
         {/* Minimal Top Header on the Artwork */}
@@ -442,215 +514,397 @@ export function SlottedAppShell({
           </div>
         </header>
 
-        {/* Centered Creation Box Over the Painting */}
-        <div className="relative z-10 flex flex-1 items-center justify-center px-4 py-8">
+        {/* Centered Direct Poll Creation Card Over the Painting */}
+        <div className="relative z-10 flex flex-1 items-center justify-center px-4 py-6">
           <div className="w-full max-w-xl">
             <form
               onSubmit={handleCreatePoll}
-              className="overflow-hidden rounded-[24px] border border-[#E2E0D8]/90 bg-[#FAF9F6] shadow-[0_28px_70px_-15px_rgba(0,0,0,0.55)]"
+              className="overflow-hidden rounded-[24px] border border-[#E4E2DA]/95 bg-[#FAF9F6] shadow-[0_28px_70px_-15px_rgba(0,0,0,0.6)]"
             >
-              {!manualMode ? (
-                /* DEFAULT PROMPT TEXTBOX MODE */
-                <div className="p-5 sm:p-6">
-                  <textarea
-                    rows={3}
-                    aria-label="Poll description prompt"
-                    value={promptText}
-                    onChange={(e) => setPromptText(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && !e.shiftKey) {
-                        e.preventDefault();
-                        handleCreatePoll();
-                      }
-                    }}
-                    placeholder="Coffee with Alex and Sam next Tue or Thu afternoon..."
-                    className="w-full resize-none bg-transparent font-sans text-base sm:text-lg text-[#141413] placeholder:text-[#8A8780] focus:outline-none"
+              <div className="p-5 sm:p-6 space-y-5 select-none">
+                {/* 1. Poll Name Input */}
+                <div>
+                  <input
+                    type="text"
+                    aria-label="Poll name"
+                    value={pollTitle}
+                    onChange={(e) => setPollTitle(e.target.value)}
+                    placeholder="Poll name (e.g. Q4 Sync, Friday Dinner, Alps Trip)..."
+                    className="w-full rounded-xl border border-[#E4E2DA] bg-white px-4 py-3 text-base sm:text-lg font-medium text-[#141413] placeholder:text-[#8A8780] focus:border-[#141413] focus:outline-none"
                     autoFocus
                   />
+                </div>
 
-                  {/* Quiet Live Parsed Pills */}
-                  <div className="mt-3 flex flex-wrap items-center gap-1.5 pt-3.5 border-t border-[#E2E0D8] font-mono text-[11px] text-[#575550]">
-                    <span className="rounded-full border border-[#E2E0D8] bg-white px-2.5 py-0.5 text-[#141413] font-medium">
-                      {parsedPrompt.title}
-                    </span>
-                    <span className="inline-flex items-center gap-1 rounded-full border border-[#E2E0D8] bg-white px-2.5 py-0.5 tabular-nums">
-                      <Calendar className="h-3 w-3 text-[#8A8780]" />
-                      {parsedPrompt.dateLabels.join(", ")}
-                    </span>
-                    <span className="inline-flex items-center gap-1 rounded-full border border-[#E2E0D8] bg-white px-2.5 py-0.5 tabular-nums">
-                      <Clock className="h-3 w-3 text-[#8A8780]" />
-                      {parsedPrompt.timeRangeLabel}
-                    </span>
-                    <span className="rounded-full border border-[#E2E0D8] bg-white px-2.5 py-0.5 tabular-nums">
-                      {parsedPrompt.durationMinutes}m
-                    </span>
+                {/* 2. Event Scale / Granularity Mode Switcher + Quick Templates */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  {/* Dates + Hours vs Full Days Toggle */}
+                  <div className="inline-flex items-center rounded-xl border border-[#E4E2DA] bg-white p-1 font-mono text-xs">
+                    <button
+                      type="button"
+                      onClick={() => handleSwitchPollMode("dates_and_hours")}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition cursor-pointer ${
+                        pollMode === "dates_and_hours"
+                          ? "bg-[#141413] text-[#F6F5F2] font-semibold"
+                          : "text-[#575550] hover:text-[#141413]"
+                      }`}
+                    >
+                      <Clock className="h-3 w-3" />
+                      <span>Dates + hours</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSwitchPollMode("full_days")}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition cursor-pointer ${
+                        pollMode === "full_days"
+                          ? "bg-[#141413] text-[#F6F5F2] font-semibold"
+                          : "text-[#575550] hover:text-[#141413]"
+                      }`}
+                    >
+                      <Calendar className="h-3 w-3" />
+                      <span>Full days</span>
+                    </button>
+                  </div>
+
+                  {/* Quick Intent Presets ("30m call", "Dinner", "Weekend") */}
+                  <div className="flex items-center gap-1 font-mono text-[11px]">
+                    <button
+                      type="button"
+                      onClick={() => applyQuickPreset("call_30m")}
+                      className="rounded-lg border border-[#E4E2DA] bg-white px-2.5 py-1 text-[#575550] hover:border-[#141413] hover:text-[#141413] transition cursor-pointer"
+                    >
+                      30m call
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyQuickPreset("dinner_2h")}
+                      className="rounded-lg border border-[#E4E2DA] bg-white px-2.5 py-1 text-[#575550] hover:border-[#141413] hover:text-[#141413] transition cursor-pointer"
+                    >
+                      Dinner
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyQuickPreset("weekend_trip")}
+                      className="rounded-lg border border-[#E4E2DA] bg-white px-2.5 py-1 text-[#575550] hover:border-[#141413] hover:text-[#141413] transition cursor-pointer"
+                    >
+                      Holiday
+                    </button>
                   </div>
                 </div>
-              ) : (
-                /* MANUAL CONFIGURATION MODE ("Set manually") */
-                <div className="p-5 sm:p-6 space-y-4">
-                  {/* Title Input */}
-                  <div>
-                    <label className="block font-mono text-[11px] uppercase tracking-wider text-[#8A8780] mb-1.5">
-                      Title
-                    </label>
-                    <input
-                      type="text"
-                      value={manualTitle}
-                      onChange={(e) => setManualTitle(e.target.value)}
-                      placeholder="Q4 Architecture Sync"
-                      className="w-full rounded-xl border border-[#E2E0D8] bg-white px-3.5 py-2 text-sm font-medium text-[#141413] placeholder:text-[#8A8780] focus:border-[#141413] focus:outline-none"
-                    />
+
+                {/* 3. Direct Interactive Calendar Date Picker (Click or Drag Across Dates) */}
+                <div>
+                  <div className="flex items-center justify-between mb-2 font-mono text-[11px] text-[#575550]">
+                    <span className="uppercase tracking-wider text-[#8A8780]">
+                      Candidate dates ({selectedDates.length} selected)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => applyQuickPreset("next_week")}
+                      className="text-[#575550] underline decoration-[#C9C6BC] underline-offset-2 hover:text-[#141413] cursor-pointer"
+                    >
+                      Select next Mon–Fri
+                    </button>
                   </div>
 
-                  {/* Candidate Dates Grid */}
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5">
-                      <label className="font-mono text-[11px] uppercase tracking-wider text-[#8A8780]">
-                        Dates ({manualDates.length} selected)
-                      </label>
-                      <span className="font-mono text-[10px] text-[#8A8780]">
-                        Click to toggle
-                      </span>
-                    </div>
-                    <div className="grid grid-cols-5 gap-1.5">
-                      {MANUAL_CALENDAR_DAYS.map((d) => {
-                        const isSelected = manualDates.includes(d.iso);
-                        return (
-                          <button
-                            key={d.iso}
-                            type="button"
-                            onClick={() => toggleManualDate(d.iso)}
-                            className={`flex flex-col items-center rounded-xl border py-2 font-mono text-xs transition cursor-pointer ${
-                              isSelected
-                                ? "border-[#141413] bg-[#141413] text-[#F6F5F2] font-semibold"
-                                : "border-[#E2E0D8] bg-white text-[#575550] hover:border-[#141413]/40"
-                            }`}
-                          >
-                            <span className="text-[10px] opacity-75">
-                              {d.day}
-                            </span>
-                            <span className="text-sm tabular-nums">{d.num}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
+                  <div className="grid grid-cols-7 gap-1.5">
+                    {CALENDAR_GRID_DAYS.map((d) => {
+                      const isSelected = selectedDates.includes(d.iso);
+                      return (
+                        <button
+                          key={d.iso}
+                          type="button"
+                          onPointerDown={() => handleDatePointerDown(d.iso)}
+                          onPointerEnter={() => handleDatePointerEnter(d.iso)}
+                          className={`flex flex-col items-center rounded-xl border py-2 font-mono text-xs transition cursor-pointer ${
+                            isSelected
+                              ? "border-[#141413] bg-[#141413] text-[#F6F5F2] font-semibold"
+                              : d.weekend
+                              ? "border-[#E4E2DA] bg-[#F2F0E9]/70 text-[#575550] hover:border-[#141413]/40"
+                              : "border-[#E4E2DA] bg-white text-[#141413] hover:border-[#141413]/40"
+                          }`}
+                        >
+                          <span className="text-[10px] opacity-70">
+                            {d.day}
+                          </span>
+                          <span className="text-sm tabular-nums">{d.num}</span>
+                        </button>
+                      );
+                    })}
                   </div>
+                </div>
 
-                  {/* Hours, Duration & Timezone Row */}
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 pt-1">
-                    {/* Hours */}
-                    <div>
-                      <label className="block font-mono text-[11px] uppercase tracking-wider text-[#8A8780] mb-1.5">
-                        Window
-                      </label>
-                      <div className="flex items-center gap-1.5 font-mono text-xs">
-                        <select
-                          aria-label="Start hour"
-                          value={manualStartHour}
-                          onChange={(e) =>
-                            setManualStartHour(Number(e.target.value))
-                          }
-                          className="w-full rounded-xl border border-[#E2E0D8] bg-white px-2.5 py-1.5 text-[#141413] tabular-nums focus:outline-none"
-                        >
-                          {[8, 9, 10, 11, 12, 13, 14].map((h) => (
-                            <option key={h} value={h}>
-                              {String(h).padStart(2, "0")}:00
-                            </option>
-                          ))}
-                        </select>
-                        <span className="text-[#8A8780]">–</span>
-                        <select
-                          aria-label="End hour"
-                          value={manualEndHour}
-                          onChange={(e) =>
-                            setManualEndHour(Number(e.target.value))
-                          }
-                          className="w-full rounded-xl border border-[#E2E0D8] bg-white px-2.5 py-1.5 text-[#141413] tabular-nums focus:outline-none"
-                        >
-                          {[13, 14, 15, 16, 17, 18, 19, 20, 21].map((h) => (
-                            <option key={h} value={h}>
-                              {String(h).padStart(2, "0")}:00
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-
-                    {/* Duration */}
-                    <div>
-                      <label className="block font-mono text-[11px] uppercase tracking-wider text-[#8A8780] mb-1.5">
-                        Duration
-                      </label>
-                      <div className="flex rounded-xl border border-[#E2E0D8] bg-white p-0.5 font-mono text-xs tabular-nums">
-                        {[15, 30, 45, 60].map((m) => (
-                          <button
-                            key={m}
-                            type="button"
-                            onClick={() => setManualDuration(m)}
-                            className={`flex-1 rounded-lg py-1 transition cursor-pointer ${
-                              manualDuration === m
-                                ? "bg-[#141413] text-[#F6F5F2] font-semibold"
-                                : "text-[#575550] hover:text-[#141413]"
-                            }`}
-                          >
-                            {m}m
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Timezone */}
-                    <div>
-                      <label className="block font-mono text-[11px] uppercase tracking-wider text-[#8A8780] mb-1.5">
-                        Timezone
-                      </label>
+                {/* 4. Candidate Hours Window (Only shown in "Dates + hours" mode) */}
+                {pollMode === "dates_and_hours" && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E4E2DA] bg-white px-3.5 py-2.5 font-mono text-xs">
+                    <span className="text-[#575550]">Candidate hours</span>
+                    <div className="flex items-center gap-2">
                       <select
-                        aria-label="Manual Timezone"
-                        value={viewerTimezone}
-                        onChange={(e) => handleChangeTimezone(e.target.value)}
-                        className="w-full rounded-xl border border-[#E2E0D8] bg-white px-2.5 py-1.5 font-mono text-xs text-[#141413] tabular-nums focus:outline-none"
+                        aria-label="Start hour"
+                        value={startHour}
+                        onChange={(e) => setStartHour(Number(e.target.value))}
+                        className="rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2.5 py-1 font-medium text-[#141413] tabular-nums focus:outline-none cursor-pointer"
                       >
-                        {TIMEZONE_OPTIONS.map((tz) => (
-                          <option key={tz.id} value={tz.id}>
-                            {tz.city} ({tz.shortCode})
-                          </option>
-                        ))}
+                        {[7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].map(
+                          (h) => (
+                            <option key={h} value={h}>
+                              {h === 12
+                                ? "12:00 PM"
+                                : h > 12
+                                ? `${h - 12}:00 PM`
+                                : `${h}:00 AM`}
+                            </option>
+                          )
+                        )}
+                      </select>
+                      <span className="text-[#8A8780]">to</span>
+                      <select
+                        aria-label="End hour"
+                        value={endHour}
+                        onChange={(e) => setEndHour(Number(e.target.value))}
+                        className="rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2.5 py-1 font-medium text-[#141413] tabular-nums focus:outline-none cursor-pointer"
+                      >
+                        {[12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23].map(
+                          (h) => (
+                            <option key={h} value={h}>
+                              {h === 12
+                                ? "12:00 PM"
+                                : h > 12
+                                ? `${h - 12}:00 PM`
+                                : `${h}:00 AM`}
+                            </option>
+                          )
+                        )}
                       </select>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
+
+                {/* 5. Expandable Advanced Settings Accordion */}
+                <AnimatePresence initial={false}>
+                  {advancedOpen && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="space-y-3.5 rounded-2xl border border-[#E4E2DA] bg-white p-4 font-mono text-xs">
+                        {/* Duration Selector inside Advanced Settings */}
+                        <div>
+                          <label className="block text-[10px] uppercase tracking-wider text-[#8A8780] mb-1.5">
+                            Event duration
+                          </label>
+                          {pollMode === "full_days" ? (
+                            <div className="grid grid-cols-3 gap-1.5">
+                              {[
+                                { mins: 1440, label: "1 Full day" },
+                                { mins: 2880, label: "2 Days (Weekend)" },
+                                { mins: 4320, label: "3 Days (Holiday)" },
+                              ].map((d) => (
+                                <button
+                                  key={d.mins}
+                                  type="button"
+                                  onClick={() => setDurationMinutes(d.mins)}
+                                  className={`rounded-xl border py-1.5 text-center transition cursor-pointer ${
+                                    durationMinutes === d.mins
+                                      ? "border-[#141413] bg-[#141413] text-[#F6F5F2] font-semibold"
+                                      : "border-[#E4E2DA] bg-[#FAF9F6] text-[#575550] hover:text-[#141413]"
+                                  }`}
+                                >
+                                  {d.label}
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-5 gap-1.5">
+                              {[
+                                { mins: 15, label: "15m" },
+                                { mins: 30, label: "30m" },
+                                { mins: 60, label: "1h" },
+                                { mins: 120, label: "2h" },
+                                { mins: 180, label: "3h" },
+                              ].map((d) => (
+                                <button
+                                  key={d.mins}
+                                  type="button"
+                                  onClick={() => setDurationMinutes(d.mins)}
+                                  className={`rounded-xl border py-1.5 text-center tabular-nums transition cursor-pointer ${
+                                    durationMinutes === d.mins
+                                      ? "border-[#141413] bg-[#141413] text-[#F6F5F2] font-semibold"
+                                      : "border-[#E4E2DA] bg-[#FAF9F6] text-[#575550] hover:text-[#141413]"
+                                  }`}
+                                >
+                                  {d.label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Access & Password Protection + Response Visibility */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                          <div>
+                            <label className="block text-[10px] uppercase tracking-wider text-[#8A8780] mb-1.5">
+                              Access control
+                            </label>
+                            <div className="flex rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] p-0.5">
+                              <button
+                                type="button"
+                                onClick={() => setPasswordProtected(false)}
+                                className={`flex-1 rounded-lg py-1 text-[11px] transition cursor-pointer ${
+                                  !passwordProtected
+                                    ? "bg-[#141413] text-white font-semibold"
+                                    : "text-[#575550]"
+                                }`}
+                              >
+                                Anyone with link
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPasswordProtected(true)}
+                                className={`flex-1 rounded-lg py-1 text-[11px] transition cursor-pointer ${
+                                  passwordProtected
+                                    ? "bg-[#141413] text-white font-semibold"
+                                    : "text-[#575550]"
+                                }`}
+                              >
+                                Password
+                              </button>
+                            </div>
+                            {passwordProtected && (
+                              <input
+                                type="password"
+                                aria-label="Set poll password"
+                                value={accessPassword}
+                                onChange={(e) =>
+                                  setAccessPassword(e.target.value)
+                                }
+                                placeholder="Set password..."
+                                className="mt-2 w-full rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] px-3 py-1.5 text-xs text-[#141413] focus:border-[#141413] focus:bg-white focus:outline-none"
+                              />
+                            )}
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] uppercase tracking-wider text-[#8A8780] mb-1.5">
+                              Response visibility
+                            </label>
+                            <select
+                              aria-label="Response visibility"
+                              value={visibilityMode}
+                              onChange={(e) =>
+                                setVisibilityMode(
+                                  e.target.value as VisibilityMode
+                                )
+                              }
+                              className="w-full rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] px-3 py-1.5 text-xs text-[#141413] focus:outline-none cursor-pointer"
+                            >
+                              <option value="public">
+                                Everyone sees responses
+                              </option>
+                              <option value="hidden_until_voted">
+                                Hidden until you vote
+                              </option>
+                              <option value="host_only">
+                                Host only (blind poll)
+                              </option>
+                            </select>
+                          </div>
+                        </div>
+
+                        {/* Allow "If needed" & Timezone */}
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#E4E2DA] pt-3">
+                          <label className="inline-flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={allowIfNeeded}
+                              onChange={(e) =>
+                                setAllowIfNeeded(e.target.checked)
+                              }
+                              className="h-3.5 w-3.5 rounded accent-[#141413]"
+                            />
+                            <span className="text-[#141413]">
+                              Allow &ldquo;If needed&rdquo; flex slots
+                            </span>
+                          </label>
+
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[#8A8780]">TZ:</span>
+                            <select
+                              aria-label="Poll Timezone"
+                              value={viewerTimezone}
+                              onChange={(e) =>
+                                handleChangeTimezone(e.target.value)
+                              }
+                              className="rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2 py-1 text-[11px] text-[#141413] focus:outline-none"
+                            >
+                              {TIMEZONE_OPTIONS.map((tz) => (
+                                <option key={tz.id} value={tz.id}>
+                                  {tz.city} ({tz.shortCode})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
 
               {/* Bottom Action Bar Inside the Creation Card */}
-              <div className="flex items-center justify-between border-t border-[#E2E0D8] bg-[#F2F0E9] px-5 py-3">
+              <div className="flex items-center justify-between border-t border-[#E4E2DA] bg-[#F2F0E9] px-5 py-3.5">
                 <button
                   type="button"
-                  onClick={handleToggleManualMode}
+                  onClick={() => setAdvancedOpen((prev) => !prev)}
                   className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 font-mono text-xs font-medium transition cursor-pointer ${
-                    manualMode
+                    advancedOpen
                       ? "border-[#141413] bg-[#141413] text-[#F6F5F2]"
                       : "border-[#D8D5CB] bg-white text-[#141413] hover:bg-[#FAF9F6]"
                   }`}
                 >
                   <SlidersHorizontal className="h-3.5 w-3.5" />
-                  <span>{manualMode ? "Use textbox" : "Set manually"}</span>
+                  <span>Advanced settings</span>
+                  <span className="rounded-full bg-black/10 px-1.5 py-0.2 text-[10px] tabular-nums">
+                    {formatDurationBadge(durationMinutes, pollMode)}
+                  </span>
+                  <ChevronDown
+                    className={`h-3 w-3 transition-transform ${
+                      advancedOpen ? "rotate-180" : ""
+                    }`}
+                  />
                 </button>
 
                 <button
                   type="submit"
-                  className="inline-flex items-center gap-2 rounded-xl bg-[#141413] px-5 py-2 font-mono text-xs font-semibold text-[#F6F5F2] hover:bg-emerald-700 transition cursor-pointer"
+                  disabled={creatingState !== "idle"}
+                  className={`inline-flex items-center gap-2 rounded-xl px-5 py-2.5 font-mono text-xs font-semibold transition cursor-pointer ${
+                    creatingState === "copied"
+                      ? "bg-emerald-600 text-white"
+                      : "bg-[#141413] text-[#F6F5F2] hover:bg-emerald-700"
+                  }`}
                 >
-                  <span>Create poll</span>
-                  <CornerDownLeft className="h-3.5 w-3.5" />
+                  {creatingState === "copied" ? (
+                    <>
+                      <Check className="h-3.5 w-3.5" />
+                      <span>Link copied — opening {createdSlugPreview}</span>
+                    </>
+                  ) : creatingState === "creating" ? (
+                    <span>Creating...</span>
+                  ) : (
+                    <>
+                      <span>Create poll</span>
+                      <CornerDownLeft className="h-3.5 w-3.5" />
+                    </>
+                  )}
                 </button>
               </div>
             </form>
           </div>
         </div>
 
-        {/* Bottom Spacer to keep Creation Box centered on First Sight */}
-        <div className="relative z-10 h-10" />
+        {/* Bottom Spacer */}
+        <div className="relative z-10 h-8" />
       </section>
 
       {/* =========================================================
@@ -675,7 +929,7 @@ export function SlottedAppShell({
             </span>
           </div>
 
-          <div className="space-y-2.5">
+          <div className="space-y-3">
             {polls.map((p) => {
               const topWin = computeRankedWindows(p)[0];
               const topDateHdr = topWin ? formatDateHeader(topWin.date) : null;
@@ -691,12 +945,13 @@ export function SlottedAppShell({
               return (
                 <div
                   key={p.id}
-                  className="flex flex-col gap-3 rounded-2xl border border-[#E2E0D8] bg-white p-4 sm:p-5 sm:flex-row sm:items-center sm:justify-between hover:border-[#C9C6BC] transition"
+                  className="flex flex-col gap-3 rounded-[24px] border border-[#E4E2DA] bg-white p-5 sm:flex-row sm:items-center sm:justify-between hover:border-[#C9C6BC] transition"
                 >
                   {/* Left: Status + Title + Meta */}
                   <div
                     onClick={() => {
                       setActiveSlug(p.slug);
+                      setJustCreatedFlag(false);
                       setViewMode("poll");
                       router.push(`/p/${p.slug}`);
                     }}
@@ -712,12 +967,25 @@ export function SlottedAppShell({
                       >
                         {p.status}
                       </span>
-                      <span className="font-medium text-sm sm:text-base text-[#141413] truncate">
+                      <span className="font-medium text-base text-[#141413] truncate">
                         {p.title}
                       </span>
                       <span className="font-mono text-xs text-[#8A8780] tabular-nums">
-                        · {p.durationMinutes}m
+                        · {formatDurationBadge(p.durationMinutes, p.pollMode)}
                       </span>
+                      {p.hasPassword && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-[#FAF9F6] border border-[#E4E2DA] px-2 py-0.5 font-mono text-[10px] text-[#575550]">
+                          <KeyRound className="h-2.5 w-2.5" /> Protected
+                        </span>
+                      )}
+                      {p.visibilityMode !== "public" && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-[#FAF9F6] border border-[#E4E2DA] px-2 py-0.5 font-mono text-[10px] text-[#575550]">
+                          <EyeOff className="h-2.5 w-2.5" />{" "}
+                          {p.visibilityMode === "hidden_until_voted"
+                            ? "Hidden until voted"
+                            : "Host only"}
+                        </span>
+                      )}
                     </div>
 
                     <div className="mt-1.5 flex flex-wrap items-center gap-3 font-mono text-xs text-[#575550] tabular-nums">
@@ -732,8 +1000,10 @@ export function SlottedAppShell({
                           <span>·</span>
                           <span className="text-emerald-800 font-medium">
                             Best: {topDateHdr.weekdayShort} {topDateHdr.dayNum}{" "}
-                            at {topStartDisp.timeLabel} (
-                            {topWin.totalAttendingCount}/
+                            {p.pollMode === "full_days"
+                              ? "(All day)"
+                              : `at ${topStartDisp.timeLabel}`}{" "}
+                            ({topWin.totalAttendingCount}/
                             {topWin.totalParticipants})
                           </span>
                         </>
@@ -746,7 +1016,7 @@ export function SlottedAppShell({
                     <button
                       type="button"
                       onClick={() => handleCopyPollLink(p.slug, p.id)}
-                      className="inline-flex items-center gap-1.5 rounded-xl border border-[#E2E0D8] bg-[#FAF9F6] px-3 py-2 text-xs text-[#141413] hover:bg-[#EFECE6] transition cursor-pointer"
+                      className="inline-flex items-center gap-1.5 rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] px-3.5 py-2 text-xs text-[#141413] hover:bg-[#EFECE6] transition cursor-pointer"
                     >
                       {copiedPollId === p.id ? (
                         <>
@@ -765,9 +1035,10 @@ export function SlottedAppShell({
                       href={`/p/${p.slug}`}
                       onClick={() => {
                         setActiveSlug(p.slug);
+                        setJustCreatedFlag(false);
                         setViewMode("poll");
                       }}
-                      className="inline-flex items-center gap-1 rounded-xl bg-[#141413] px-3.5 py-2 text-xs font-medium text-[#F6F5F2] hover:bg-[#292927] transition"
+                      className="inline-flex items-center gap-1 rounded-xl bg-[#141413] px-4 py-2 text-xs font-medium text-[#F6F5F2] hover:bg-emerald-700 transition"
                     >
                       <span>Open</span>
                       <ArrowUpRight className="h-3.5 w-3.5" />
@@ -776,8 +1047,8 @@ export function SlottedAppShell({
                     {polls.length > 1 && (
                       <button
                         type="button"
-                        onClick={() => handleDeletePoll(p.id)}
-                        className="rounded-xl border border-[#E2E0D8] bg-white p-2 text-[#8A8780] hover:border-rose-300 hover:text-rose-600 transition cursor-pointer"
+                        onClick={() => handleDeletePoll(p.slug, p.id)}
+                        className="rounded-xl border border-[#E4E2DA] bg-white p-2 text-[#8A8780] hover:border-rose-300 hover:text-rose-600 transition cursor-pointer"
                         title="Delete poll"
                       >
                         <Trash2 className="h-3.5 w-3.5" />

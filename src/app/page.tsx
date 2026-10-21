@@ -6,11 +6,11 @@ import { SlottedAppShell } from "@/components/slotted/slotted-app-shell";
 
 function HomeContent() {
   const searchParams = useSearchParams();
-  const initialManual = searchParams?.get("manual") === "1";
+  const initialAdvanced = searchParams?.get("advanced") === "1";
   return (
     <SlottedAppShell
       initialViewMode="landing"
-      initialManualMode={initialManual}
+      initialAdvancedOpen={initialAdvanced}
     />
   );
 }

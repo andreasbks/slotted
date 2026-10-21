@@ -2,14 +2,16 @@ export type AvailabilityState = "available" | "if_needed";
 
 export type BrushMode = "available" | "if_needed" | "clear";
 
-export type AtmosphereTheme = "linen" | "emerald" | "sunset" | "slate";
+export type VisibilityMode = "public" | "hidden_until_voted" | "host_only";
+
+export type PollMode = "dates_and_hours" | "full_days";
 
 export interface TimezoneOption {
   id: string;
   label: string;
   shortCode: string;
   city: string;
-  offsetHoursFromEDT: number; // Base reference: America/New_York (EDT, UTC-4)
+  offsetHoursFromEDT: number;
   utcLabel: string;
 }
 
@@ -59,6 +61,7 @@ export const TIMEZONE_OPTIONS: TimezoneOption[] = [
 export interface PollParticipant {
   id: string;
   guestSessionId: string;
+  clerkUserId?: string | null;
   name: string;
   role?: string;
   city: string;
@@ -69,37 +72,45 @@ export interface PollParticipant {
   slots: Record<string, AvailabilityState>;
 }
 
-export interface EaselReaction {
-  emoji: string;
-  label: string;
-  count: number;
-  userReacted?: boolean;
-}
-
 export interface PollData {
   id: string;
   slug: string;
   title: string;
   description: string;
-  themeTint: AtmosphereTheme;
+  location?: string;
+  pollMode?: PollMode; // "dates_and_hours" (default) | "full_days"
   hostName: string;
+  hostClerkUserId?: string | null;
+  hostTokenHash?: string;
   timezone: string;
   candidateDates: string[];
   dayStartHour: number;
   dayEndHour: number;
   slotMinutes: number;
+  /**
+   * For "dates_and_hours": minutes (15, 30, 60, 120, 180)
+   * For "full_days": minutes representing N days (1440 = 1 day, 2880 = 2 days, 4320 = 3 days)
+   */
   durationMinutes: number;
+  // Advanced Settings
+  hasPassword?: boolean;
+  accessPassword?: string | null;
+  visibilityMode: VisibilityMode;
+  allowIfNeeded: boolean;
+  deadlineAt?: string | null;
+  // Status
   status: "OPEN" | "LOCKED";
   lockedSlotStart?: string;
   lockedSlotEnd?: string;
   lockedLocation?: string;
+  createdAt?: string;
   participants: PollParticipant[];
-  reactions: EaselReaction[];
 }
 
 export interface RankedWindow {
   id: string;
   date: string;
+  endDate?: string;
   startSlotKey: string;
   endSlotKey: string;
   slotKeys: string[];
@@ -115,31 +126,43 @@ export interface RankedWindow {
   missingParticipants: PollParticipant[];
   isPerfectStrict: boolean;
   isFullWithFlex: boolean;
+  isFullDaysWindow?: boolean;
+  daysCount?: number;
 }
 
-export const STORAGE_KEY_POLLS = "slotted_flat_polls_v1";
-export const STORAGE_KEY_GUEST = "slotted_flat_guest_v1";
-export const STORAGE_KEY_TZ = "slotted_flat_tz_v1";
+export const STORAGE_KEY_POLLS = "slotted_mlp_polls_v2";
+export const STORAGE_KEY_GUEST = "slotted_mlp_guest_v2";
+export const STORAGE_KEY_SESSION_ID = "slotted_mlp_session_v2";
+export const STORAGE_KEY_HOST_TOKENS = "slotted_mlp_host_tokens_v2";
+export const STORAGE_KEY_UNLOCKED_SLUGS = "slotted_mlp_unlocked_v2";
+export const STORAGE_KEY_TZ = "slotted_mlp_tz_v2";
 
-export function loadStoredPolls(): PollData[] {
-  if (typeof window === "undefined") return INITIAL_POLLS;
+export function formatDurationBadge(
+  durationMinutes: number,
+  pollMode?: PollMode
+): string {
+  if (pollMode === "full_days" || durationMinutes >= 1440) {
+    const days = Math.max(1, Math.round(durationMinutes / 1440));
+    return days === 1 ? "Full day" : `${days} days`;
+  }
+  if (durationMinutes >= 60 && durationMinutes % 60 === 0) {
+    return `${durationMinutes / 60}h`;
+  }
+  return `${durationMinutes}m`;
+}
+
+export function getOrCreateGuestSessionId(): string {
+  if (typeof window === "undefined") return "slt_guest_local";
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_POLLS);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
-      }
+    let existing = localStorage.getItem(STORAGE_KEY_SESSION_ID);
+    if (!existing) {
+      existing = `slt_guest_${Math.random().toString(36).slice(2, 10)}`;
+      localStorage.setItem(STORAGE_KEY_SESSION_ID, existing);
     }
-  } catch {}
-  return INITIAL_POLLS;
-}
-
-export function saveStoredPolls(polls: PollData[]): void {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(STORAGE_KEY_POLLS, JSON.stringify(polls));
-  } catch {}
+    return existing;
+  } catch {
+    return "slt_guest_local";
+  }
 }
 
 export function generateDayTimeSlots(
@@ -168,6 +191,9 @@ export function parseSlotKey(slotKey: string): {
   minutesFromMidnight: number;
 } {
   const [date, time] = slotKey.split("T");
+  if (!time || time === "ALLDAY") {
+    return { date, time: "ALLDAY", minutesFromMidnight: 540 };
+  }
   const [hh, mm] = (time || "09:00").split(":").map(Number);
   return {
     date,
@@ -253,6 +279,91 @@ export function formatDateHeader(isoDate: string): {
 }
 
 export function computeRankedWindows(poll: PollData): RankedWindow[] {
+  const totalParticipants = poll.participants.length;
+  const windows: RankedWindow[] = [];
+
+  // MODE A: FULL-DAYS POLL (For group holidays, weekend trips, offsites)
+  if (poll.pollMode === "full_days" || poll.durationMinutes >= 1440) {
+    const daysNeeded = Math.max(
+      1,
+      Math.min(
+        poll.candidateDates.length,
+        Math.round(poll.durationMinutes / 1440) || 1
+      )
+    );
+
+    for (let i = 0; i <= poll.candidateDates.length - daysNeeded; i++) {
+      const spanDates = poll.candidateDates.slice(i, i + daysNeeded);
+      const slotKeys = spanDates.map((d) => `${d}TALLDAY`);
+
+      const availableParticipants: PollParticipant[] = [];
+      const ifNeededParticipants: PollParticipant[] = [];
+      const missingParticipants: PollParticipant[] = [];
+
+      for (const p of poll.participants) {
+        let allAvailable = true;
+        let canAttendWithFlex = true;
+
+        for (const key of slotKeys) {
+          const st = p.slots[key];
+          if (!st) {
+            allAvailable = false;
+            canAttendWithFlex = false;
+            break;
+          }
+          if (st === "if_needed") {
+            allAvailable = false;
+          }
+        }
+
+        if (allAvailable) {
+          availableParticipants.push(p);
+        } else if (canAttendWithFlex) {
+          ifNeededParticipants.push(p);
+        } else {
+          missingParticipants.push(p);
+        }
+      }
+
+      const strictAvailableCount = availableParticipants.length;
+      const ifNeededCount = ifNeededParticipants.length;
+      const totalAttendingCount = strictAvailableCount + ifNeededCount;
+      if (totalAttendingCount === 0) continue;
+
+      const score =
+        100 * strictAvailableCount + 65 * ifNeededCount + Math.max(0, 15 - i);
+
+      windows.push({
+        id: `${slotKeys[0]}__${daysNeeded}d`,
+        date: spanDates[0],
+        endDate: spanDates[spanDates.length - 1],
+        startSlotKey: slotKeys[0],
+        endSlotKey: slotKeys[slotKeys.length - 1],
+        slotKeys,
+        startTimeMinutes: 540,
+        endTimeMinutes: 1020,
+        score,
+        strictAvailableCount,
+        ifNeededCount,
+        totalAttendingCount,
+        totalParticipants,
+        availableParticipants,
+        ifNeededParticipants,
+        missingParticipants,
+        isPerfectStrict:
+          strictAvailableCount === totalParticipants && totalParticipants > 0,
+        isFullWithFlex:
+          totalAttendingCount === totalParticipants && totalParticipants > 0,
+        isFullDaysWindow: true,
+        daysCount: daysNeeded,
+      });
+    }
+
+    windows.sort((a, b) => b.score - a.score);
+    return windows.slice(0, 6);
+  }
+
+  // MODE B: DATES + HOURS POLL
   const slotsNeeded = Math.max(
     1,
     Math.round(poll.durationMinutes / poll.slotMinutes)
@@ -262,8 +373,6 @@ export function computeRankedWindows(poll: PollData): RankedWindow[] {
     poll.dayEndHour,
     poll.slotMinutes
   );
-  const windows: RankedWindow[] = [];
-  const totalParticipants = poll.participants.length;
 
   poll.candidateDates.forEach((date, dateIdx) => {
     for (let i = 0; i <= dayTimes.length - slotsNeeded; i++) {
@@ -384,7 +493,7 @@ export const INITIAL_POLLS: PollData[] = [
     title: "Series A Partner Sync — Q4",
     description:
       "Q4 metrics, partner memo review, and board rehearsal across SF, NYC, London, and Berlin.",
-    themeTint: "linen",
+    pollMode: "dates_and_hours",
     hostName: "Elena Rostova",
     timezone: "America/New_York",
     candidateDates: ["2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30"],
@@ -392,9 +501,14 @@ export const INITIAL_POLLS: PollData[] = [
     dayEndHour: 16,
     slotMinutes: 30,
     durationMinutes: 60,
+    hasPassword: false,
+    accessPassword: null,
+    visibilityMode: "public",
+    allowIfNeeded: true,
+    deadlineAt: null,
     status: "OPEN",
     lockedLocation: "meet.slotted.app/series-a-q4",
-    reactions: [],
+    createdAt: "2026-10-21T18:00:00.000Z",
     participants: [
       {
         id: "p_elena",
@@ -587,97 +701,79 @@ export const INITIAL_POLLS: PollData[] = [
     ],
   },
   {
-    id: "pol_yc_offsite",
-    slug: "yc-w27-cofounder-offsite",
-    title: "YC W27 Cofounder Offsite",
-    description:
-      "60-minute sprint planning and demo day narrative review.",
-    themeTint: "emerald",
+    id: "pol_autumn_offsite",
+    slug: "alps-group-holiday",
+    title: "Autumn Alps Weekend Trip",
+    description: "Picking a 3-day Friday–Sunday window for the cabin trip.",
+    pollMode: "full_days",
     hostName: "Marcus Vance",
-    timezone: "America/Los_Angeles",
-    candidateDates: ["2026-11-03", "2026-11-04", "2026-11-05"],
+    timezone: "Europe/Berlin",
+    candidateDates: [
+      "2026-10-30",
+      "2026-10-31",
+      "2026-11-01",
+      "2026-11-06",
+      "2026-11-07",
+      "2026-11-08",
+    ],
     dayStartHour: 9,
-    dayEndHour: 15,
+    dayEndHour: 17,
     slotMinutes: 30,
-    durationMinutes: 60,
+    durationMinutes: 4320, // 3 days (3 * 1440)
+    hasPassword: false,
+    accessPassword: null,
+    visibilityMode: "public",
+    allowIfNeeded: true,
+    deadlineAt: null,
     status: "OPEN",
-    lockedLocation: "San Francisco · Dogpatch Studio",
-    reactions: [],
+    lockedLocation: "Chamonix Chalet",
+    createdAt: "2026-10-21T16:30:00.000Z",
     participants: [
       {
-        id: "p_yc_1",
+        id: "p_hol_1",
         guestSessionId: "slt_devon",
         name: "Devon",
-        role: "Cofounder",
-        city: "SF",
-        timezone: "America/Los_Angeles",
+        city: "BER",
+        timezone: "Europe/Berlin",
         avatarColor: "#059669",
-        slots: buildSlots([
-          [
-            "2026-11-03",
-            ["10:00", "10:30", "11:00", "11:30", "13:00", "13:30"],
-            "available",
-          ],
-          [
-            "2026-11-04",
-            ["09:30", "10:00", "10:30", "11:00", "14:00", "14:30"],
-            "available",
-          ],
-          ["2026-11-05", ["10:00", "10:30", "11:00", "11:30"], "available"],
-        ]),
+        slots: {
+          "2026-10-30TALLDAY": "available",
+          "2026-10-31TALLDAY": "available",
+          "2026-11-01TALLDAY": "available",
+          "2026-11-06TALLDAY": "available",
+          "2026-11-07TALLDAY": "available",
+          "2026-11-08TALLDAY": "available",
+        },
       },
       {
-        id: "p_yc_2",
+        id: "p_hol_2",
         guestSessionId: "slt_claire",
         name: "Claire",
-        role: "Partner",
-        city: "SF",
-        timezone: "America/Los_Angeles",
+        city: "LDN",
+        timezone: "Europe/London",
         avatarColor: "#D97706",
         slots: {
-          ...buildSlots([
-            ["2026-11-03", ["10:00", "10:30", "11:00", "11:30"], "available"],
-            ["2026-11-04", ["10:00", "10:30", "11:00", "11:30"], "available"],
-            ["2026-11-05", ["13:00", "13:30", "14:00"], "available"],
-          ]),
-          "2026-11-05T10:00": "if_needed",
-          "2026-11-05T10:30": "if_needed",
+          "2026-10-30TALLDAY": "if_needed",
+          "2026-10-31TALLDAY": "available",
+          "2026-11-01TALLDAY": "available",
+          "2026-11-06TALLDAY": "available",
+          "2026-11-07TALLDAY": "available",
+          "2026-11-08TALLDAY": "available",
         },
       },
       {
-        id: "p_yc_3",
-        guestSessionId: "slt_kenji",
-        name: "Kenji",
-        role: "Design",
-        city: "TYO",
-        timezone: "Asia/Tokyo",
-        avatarColor: "#2563EB",
-        slots: {
-          ...buildSlots([
-            ["2026-11-03", ["10:00", "10:30", "11:00"], "available"],
-            ["2026-11-04", ["10:00", "10:30", "11:00", "11:30"], "available"],
-          ]),
-          "2026-11-03T11:30": "if_needed",
-        },
-      },
-      {
-        id: "p_yc_you",
+        id: "p_hol_you",
         guestSessionId: "slt_guest_local",
         name: "Alex",
-        role: "You",
         city: "NYC",
         timezone: "America/New_York",
         avatarColor: "#10B981",
         isCurrentUser: true,
-        slots: buildSlots([
-          ["2026-11-03", ["10:00", "10:30", "11:00", "11:30"], "available"],
-          [
-            "2026-11-04",
-            ["10:00", "10:30", "11:00", "11:30", "13:00", "13:30"],
-            "available",
-          ],
-          ["2026-11-05", ["10:00", "10:30", "11:00"], "available"],
-        ]),
+        slots: {
+          "2026-11-06TALLDAY": "available",
+          "2026-11-07TALLDAY": "available",
+          "2026-11-08TALLDAY": "available",
+        },
       },
     ],
   },
@@ -687,7 +783,7 @@ export const INITIAL_POLLS: PollData[] = [
     title: "Design System Crit",
     description:
       "45-minute review of typographic scale, grid hairlines, and mobile touch gestures.",
-    themeTint: "sunset",
+    pollMode: "dates_and_hours",
     hostName: "Sora Takahashi",
     timezone: "America/New_York",
     candidateDates: ["2026-10-28", "2026-10-29", "2026-10-30"],
@@ -695,11 +791,16 @@ export const INITIAL_POLLS: PollData[] = [
     dayEndHour: 16,
     slotMinutes: 30,
     durationMinutes: 45,
+    hasPassword: false,
+    accessPassword: null,
+    visibilityMode: "public",
+    allowIfNeeded: true,
+    deadlineAt: null,
     status: "LOCKED",
     lockedSlotStart: "2026-10-28T11:00",
     lockedSlotEnd: "2026-10-28T12:00",
     lockedLocation: "meet.slotted.app/design-crit",
-    reactions: [],
+    createdAt: "2026-10-20T14:00:00.000Z",
     participants: [
       {
         id: "p_dc_1",
@@ -760,129 +861,39 @@ export const INITIAL_POLLS: PollData[] = [
   },
 ];
 
-export interface ParsedNaturalPoll {
-  title: string;
-  dateLabels: string[];
-  candidateDates: string[];
-  timeRangeLabel: string;
-  dayStartHour: number;
-  dayEndHour: number;
-  durationMinutes: number;
-  participantsExtracted: string[];
-}
-
-export function parseNaturalLanguagePoll(input: string): ParsedNaturalPoll {
-  const raw =
-    input.trim() ||
-    "Coffee with Alex and Sam next Tue or Thu afternoon 30m";
-
-  let durationMinutes = 30;
-  if (/\b15\s*(m|min|mins)\b/i.test(raw)) {
-    durationMinutes = 15;
-  } else if (/\b30\s*(m|min|mins)\b/i.test(raw)) {
-    durationMinutes = 30;
-  } else if (/\b45\s*(m|min|mins)\b/i.test(raw)) {
-    durationMinutes = 45;
-  } else if (/\b(60\s*(m|min|mins)|1\s*h|1\s*hr|hour)\b/i.test(raw)) {
-    durationMinutes = 60;
-  } else if (/\b90\s*(m|min|mins)\b/i.test(raw)) {
-    durationMinutes = 90;
-  } else if (/coffee|quick|catchup/i.test(raw)) {
-    durationMinutes = 30;
-  } else {
-    durationMinutes = 45;
-  }
-
-  let dayStartHour = 9;
-  let dayEndHour = 17;
-  let timeRangeLabel = "09:00 – 17:00";
-
-  if (/morning/i.test(raw)) {
-    dayStartHour = 9;
-    dayEndHour = 13;
-    timeRangeLabel = "09:00 – 13:00";
-  } else if (/afternoon/i.test(raw)) {
-    dayStartHour = 13;
-    dayEndHour = 18;
-    timeRangeLabel = "13:00 – 18:00";
-  } else if (/evening|dinner/i.test(raw)) {
-    dayStartHour = 17;
-    dayEndHour = 21;
-    timeRangeLabel = "17:00 – 21:00";
-  } else {
-    const timeMatch = raw.match(
-      /(\d{1,2})\s*(am|pm)?\s*[-–to]+\s*(\d{1,2})\s*(am|pm)?/i
-    );
-    if (timeMatch) {
-      let s = parseInt(timeMatch[1], 10);
-      const sMeridiem = (timeMatch[2] || "am").toLowerCase();
-      let e = parseInt(timeMatch[3], 10);
-      const eMeridiem = (timeMatch[4] || "pm").toLowerCase();
-      if (sMeridiem === "pm" && s < 12) s += 12;
-      if (eMeridiem === "pm" && e < 12) e += 12;
-      if (e > s && e - s >= 2 && e <= 22) {
-        dayStartHour = s;
-        dayEndHour = Math.min(s + 9, e);
-        timeRangeLabel = `${String(dayStartHour).padStart(2, "0")}:00 – ${String(dayEndHour).padStart(2, "0")}:00`;
-      }
-    }
-  }
-
-  let candidateDates = ["2026-10-27", "2026-10-28", "2026-10-29"];
-  if (/tue\s*(or|and|,)\s*thu/i.test(raw)) {
-    candidateDates = ["2026-10-27", "2026-10-29"];
-  } else if (/mon.*wed/i.test(raw)) {
-    candidateDates = ["2026-10-26", "2026-10-27", "2026-10-28"];
-  } else if (/wed.*fri/i.test(raw)) {
-    candidateDates = ["2026-10-28", "2026-10-29", "2026-10-30"];
-  } else if (/tue.*fri/i.test(raw)) {
-    candidateDates = ["2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30"];
-  }
-
-  const dateLabels = candidateDates.map((d) => {
-    const hdr = formatDateHeader(d);
-    return `${hdr.weekdayShort} ${hdr.dayNum}`;
-  });
-
-  // Extract names after "with ..." if present
-  const participantsExtracted: string[] = [];
-  const withMatch = raw.match(/\bwith\s+([A-Z][a-z]+(?:\s+(?:and|&|,)\s+[A-Z][a-z]+)*)/);
-  if (withMatch && withMatch[1]) {
-    const names = withMatch[1]
-      .split(/\s+(?:and|&|,)\s+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-    participantsExtracted.push(...names);
-  }
-
-  const cleanedTitle = raw
-    .replace(/\b(next|this)\s+[a-z\s,–-]+/gi, "")
-    .replace(/(\d{1,2})\s*(am|pm)?\s*[-–to]+\s*(\d{1,2})\s*(am|pm)?/gi, "")
-    .replace(/\b(15|30|45|60|90)\s*(m|min|mins)\b/gi, "")
-    .replace(/\b(mornings?|afternoons?|evenings?|between|and\s+\d+)\b/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  const title =
-    cleanedTitle.length >= 3 ? cleanedTitle : "Coffee with Alex and Sam";
-
-  return {
-    title,
-    dateLabels,
-    candidateDates,
-    timeRangeLabel,
-    dayStartHour,
-    dayEndHour,
-    durationMinutes,
-    participantsExtracted,
-  };
-}
-
 export function generateIcsContent(
   poll: PollData,
   window: RankedWindow
 ): string {
   const [y, m, d] = window.date.split("-");
+
+  if (poll.pollMode === "full_days" || window.isFullDaysWindow) {
+    const endIso = window.endDate || window.date;
+    const [ey, em, ed] = endIso.split("-").map(Number);
+    const nextDay = new Date(Date.UTC(ey, em - 1, ed + 1));
+    const ny = nextDay.getUTCFullYear();
+    const nm = String(nextDay.getUTCMonth() + 1).padStart(2, "0");
+    const nd = String(nextDay.getUTCDate()).padStart(2, "0");
+    const attendees = poll.participants.map((p) => p.name).join(", ");
+    return [
+      "BEGIN:VCALENDAR",
+      "VERSION:2.0",
+      "PRODID:-//slotted//EN",
+      "CALSCALE:GREGORIAN",
+      "METHOD:PUBLISH",
+      "BEGIN:VEVENT",
+      `UID:${poll.id}@slotted.app`,
+      `SUMMARY:${poll.title}`,
+      `DTSTART;VALUE=DATE:${y}${m}${d}`,
+      `DTEND;VALUE=DATE:${ny}${nm}${nd}`,
+      `DESCRIPTION:${poll.description}\\n\\nConfirmed (${window.totalAttendingCount}/${window.totalParticipants}: ${attendees})`,
+      `LOCATION:${poll.lockedLocation || poll.location || "All-day event"}`,
+      "STATUS:CONFIRMED",
+      "END:VEVENT",
+      "END:VCALENDAR",
+    ].join("\r\n");
+  }
+
   const startHh = String(Math.floor(window.startTimeMinutes / 60)).padStart(
     2,
     "0"
@@ -908,7 +919,7 @@ export function generateIcsContent(
     `DTSTART;TZID=${poll.timezone}:${dtStart}`,
     `DTEND;TZID=${poll.timezone}:${dtEnd}`,
     `DESCRIPTION:${poll.description}\\n\\nConfirmed (${window.totalAttendingCount}/${window.totalParticipants}: ${attendees})`,
-    `LOCATION:${poll.lockedLocation || "Video call"}`,
+    `LOCATION:${poll.lockedLocation || poll.location || "Video call"}`,
     "STATUS:CONFIRMED",
     "END:VEVENT",
     "END:VCALENDAR",
