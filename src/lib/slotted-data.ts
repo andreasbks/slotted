@@ -66,9 +66,6 @@ export interface PollParticipant {
   avatarColor: string;
   isCurrentUser?: boolean;
   isRequired?: boolean;
-  /**
-   * Keyed by canonical slot ISO string in the poll's base date/time, e.g. "2026-10-28T10:00"
-   */
   slots: Record<string, AvailabilityState>;
 }
 
@@ -86,15 +83,15 @@ export interface PollData {
   description: string;
   themeTint: AtmosphereTheme;
   hostName: string;
-  timezone: string; // Base timezone of the poll (default "America/New_York")
-  candidateDates: string[]; // ["2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30"]
-  dayStartHour: number; // e.g., 9
-  dayEndHour: number; // e.g., 16
-  slotMinutes: number; // 30
-  durationMinutes: number; // 30 | 45 | 60 | 90
+  timezone: string;
+  candidateDates: string[];
+  dayStartHour: number;
+  dayEndHour: number;
+  slotMinutes: number;
+  durationMinutes: number;
   status: "OPEN" | "LOCKED";
-  lockedSlotStart?: string; // e.g. "2026-10-28T10:00"
-  lockedSlotEnd?: string; // e.g. "2026-10-28T11:00"
+  lockedSlotStart?: string;
+  lockedSlotEnd?: string;
   lockedLocation?: string;
   participants: PollParticipant[];
   reactions: EaselReaction[];
@@ -120,6 +117,31 @@ export interface RankedWindow {
   isFullWithFlex: boolean;
 }
 
+export const STORAGE_KEY_POLLS = "slotted_flat_polls_v1";
+export const STORAGE_KEY_GUEST = "slotted_flat_guest_v1";
+export const STORAGE_KEY_TZ = "slotted_flat_tz_v1";
+
+export function loadStoredPolls(): PollData[] {
+  if (typeof window === "undefined") return INITIAL_POLLS;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_POLLS);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch {}
+  return INITIAL_POLLS;
+}
+
+export function saveStoredPolls(polls: PollData[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(STORAGE_KEY_POLLS, JSON.stringify(polls));
+  } catch {}
+}
+
 export function generateDayTimeSlots(
   dayStartHour: number,
   dayEndHour: number,
@@ -140,7 +162,11 @@ export function makeSlotKey(date: string, timeStr: string): string {
   return `${date}T${timeStr}`;
 }
 
-export function parseSlotKey(slotKey: string): { date: string; time: string; minutesFromMidnight: number } {
+export function parseSlotKey(slotKey: string): {
+  date: string;
+  time: string;
+  minutesFromMidnight: number;
+} {
   const [date, time] = slotKey.split("T");
   const [hh, mm] = (time || "09:00").split(":").map(Number);
   return {
@@ -160,7 +186,8 @@ export function formatMinutesToDisplay(
     TIMEZONE_OPTIONS.find((t) => t.id === targetTimezoneId) || TIMEZONE_OPTIONS[1];
   const baseTz =
     TIMEZONE_OPTIONS.find((t) => t.id === baseTimezoneId) || TIMEZONE_OPTIONS[1];
-  const diffMinutes = (targetTz.offsetHoursFromEDT - baseTz.offsetHoursFromEDT) * 60;
+  const diffMinutes =
+    (targetTz.offsetHoursFromEDT - baseTz.offsetHoursFromEDT) * 60;
 
   let shifted = minutesFromMidnight + diffMinutes;
   let dayShift = 0;
@@ -180,7 +207,10 @@ export function formatMinutesToDisplay(
 
   if (compact) {
     return {
-      timeLabel: mins === 0 ? `${hours12}${period.toLowerCase()}` : `${hours12}:${mmStr}${period.toLowerCase()}`,
+      timeLabel:
+        mins === 0
+          ? `${hours12}${period.toLowerCase()}`
+          : `${hours12}:${mmStr}${period.toLowerCase()}`,
       dayShift,
     };
   }
@@ -222,13 +252,16 @@ export function formatDateHeader(isoDate: string): {
   };
 }
 
-/**
- * Real-time Consensus & Best-Slot Ranking Engine
- * Score(W) = (100 * C_available) + (65 * C_if_needed) + EarlinessBonus(W)
- */
 export function computeRankedWindows(poll: PollData): RankedWindow[] {
-  const slotsNeeded = Math.max(1, Math.round(poll.durationMinutes / poll.slotMinutes));
-  const dayTimes = generateDayTimeSlots(poll.dayStartHour, poll.dayEndHour, poll.slotMinutes);
+  const slotsNeeded = Math.max(
+    1,
+    Math.round(poll.durationMinutes / poll.slotMinutes)
+  );
+  const dayTimes = generateDayTimeSlots(
+    poll.dayStartHour,
+    poll.dayEndHour,
+    poll.slotMinutes
+  );
   const windows: RankedWindow[] = [];
   const totalParticipants = poll.participants.length;
 
@@ -278,12 +311,13 @@ export function computeRankedWindows(poll: PollData): RankedWindow[] {
       const endMm = String(endMinutes % 60).padStart(2, "0");
       const endSlotKey = `${date}T${endHh}:${endMm}`;
 
-      // Earliness & optimal mid-day bonus so 10:00 AM - 2:00 PM beats 4:30 PM on ties
       const midDayBonus =
-        startParsed.minutesFromMidnight >= 600 && startParsed.minutesFromMidnight <= 840
+        startParsed.minutesFromMidnight >= 600 &&
+        startParsed.minutesFromMidnight <= 840
           ? 8
           : 0;
-      const earlinessBonus = Math.max(0, 20 - dateIdx * 3 - i * 0.4) + midDayBonus;
+      const earlinessBonus =
+        Math.max(0, 20 - dateIdx * 3 - i * 0.4) + midDayBonus;
 
       const score =
         100 * strictAvailableCount + 65 * ifNeededCount + earlinessBonus;
@@ -304,21 +338,23 @@ export function computeRankedWindows(poll: PollData): RankedWindow[] {
         availableParticipants,
         ifNeededParticipants,
         missingParticipants,
-        isPerfectStrict: strictAvailableCount === totalParticipants && totalParticipants > 0,
-        isFullWithFlex: totalAttendingCount === totalParticipants && totalParticipants > 0,
+        isPerfectStrict:
+          strictAvailableCount === totalParticipants && totalParticipants > 0,
+        isFullWithFlex:
+          totalAttendingCount === totalParticipants && totalParticipants > 0,
       });
     }
   });
 
   windows.sort((a, b) => b.score - a.score);
 
-  // Deduplicate overlapping adjacent windows so Top 4 leaderboard shows distinct actionable blocks
   const distinct: RankedWindow[] = [];
   for (const w of windows) {
     const overlapsExisting = distinct.some(
       (existing) =>
         existing.date === w.date &&
-        Math.abs(existing.startTimeMinutes - w.startTimeMinutes) < poll.durationMinutes
+        Math.abs(existing.startTimeMinutes - w.startTimeMinutes) <
+          poll.durationMinutes
     );
     if (!overlapsExisting || distinct.length === 0) {
       distinct.push(w);
@@ -329,9 +365,6 @@ export function computeRankedWindows(poll: PollData): RankedWindow[] {
   return distinct;
 }
 
-/**
- * Helper to create ranges of slots cleanly
- */
 function buildSlots(
   entries: Array<[string, string[], AvailabilityState?]>
 ): Record<string, AvailabilityState> {
@@ -361,12 +394,7 @@ export const INITIAL_POLLS: PollData[] = [
     durationMinutes: 60,
     status: "OPEN",
     lockedLocation: "meet.slotted.app/series-a-q4",
-    reactions: [
-      { emoji: "🔥", label: "Locked in", count: 4, userReacted: true },
-      { emoji: "☕", label: "Coffee ready", count: 3, userReacted: false },
-      { emoji: "👍", label: "Works for me", count: 5, userReacted: true },
-      { emoji: "🎉", label: "Ship it", count: 2, userReacted: false },
-    ],
+    reactions: [],
     participants: [
       {
         id: "p_elena",
@@ -375,45 +403,94 @@ export const INITIAL_POLLS: PollData[] = [
         role: "Lead Partner",
         city: "SF",
         timezone: "America/Los_Angeles",
-        avatarColor: "#059669",
+        avatarColor: "#10B981",
         isRequired: true,
         slots: buildSlots([
-          ["2026-10-27", ["10:30", "11:00", "11:30", "13:00", "13:30", "14:00"], "available"],
+          [
+            "2026-10-27",
+            ["10:30", "11:00", "11:30", "13:00", "13:30", "14:00"],
+            "available",
+          ],
           ["2026-10-27", ["09:30", "10:00"], "if_needed"],
-          ["2026-10-28", ["10:00", "10:30", "11:00", "11:30", "14:00", "14:30", "15:00"], "available"],
-          ["2026-10-29", ["11:00", "11:30", "12:00", "12:30", "14:00", "14:30"], "available"],
+          [
+            "2026-10-28",
+            ["10:00", "10:30", "11:00", "11:30", "14:00", "14:30", "15:00"],
+            "available",
+          ],
+          [
+            "2026-10-29",
+            ["11:00", "11:30", "12:00", "12:30", "14:00", "14:30"],
+            "available",
+          ],
           ["2026-10-29", ["09:30", "10:00"], "if_needed"],
-          ["2026-10-30", ["10:00", "10:30", "11:00", "13:00", "13:30"], "available"],
+          [
+            "2026-10-30",
+            ["10:00", "10:30", "11:00", "13:00", "13:30"],
+            "available",
+          ],
         ]),
       },
       {
         id: "p_marcus",
         guestSessionId: "slt_marcus",
         name: "Marcus",
-        role: "Founder & CEO",
+        role: "Founder",
         city: "NYC",
         timezone: "America/New_York",
         avatarColor: "#141413",
         isRequired: true,
         slots: buildSlots([
-          ["2026-10-27", ["09:00", "09:30", "10:00", "10:30", "11:00", "14:00", "14:30"], "available"],
-          ["2026-10-28", ["09:30", "10:00", "10:30", "11:00", "11:30", "13:30", "14:00", "14:30"], "available"],
-          ["2026-10-29", ["10:00", "10:30", "11:00", "11:30", "14:00", "14:30", "15:00"], "available"],
-          ["2026-10-30", ["09:30", "10:00", "10:30", "11:00", "11:30"], "available"],
+          [
+            "2026-10-27",
+            ["09:00", "09:30", "10:00", "10:30", "11:00", "14:00", "14:30"],
+            "available",
+          ],
+          [
+            "2026-10-28",
+            [
+              "09:30",
+              "10:00",
+              "10:30",
+              "11:00",
+              "11:30",
+              "13:30",
+              "14:00",
+              "14:30",
+            ],
+            "available",
+          ],
+          [
+            "2026-10-29",
+            ["10:00", "10:30", "11:00", "11:30", "14:00", "14:30", "15:00"],
+            "available",
+          ],
+          [
+            "2026-10-30",
+            ["09:30", "10:00", "10:30", "11:00", "11:30"],
+            "available",
+          ],
         ]),
       },
       {
         id: "p_sora",
         guestSessionId: "slt_sora",
         name: "Sora",
-        role: "Design Partner",
+        role: "Design",
         city: "London",
         timezone: "Europe/London",
         avatarColor: "#D97706",
         slots: {
           ...buildSlots([
-            ["2026-10-27", ["09:30", "10:00", "10:30", "11:00", "11:30"], "available"],
-            ["2026-10-28", ["10:00", "10:30", "11:00", "11:30", "12:00"], "available"],
+            [
+              "2026-10-27",
+              ["09:30", "10:00", "10:30", "11:00", "11:30"],
+              "available",
+            ],
+            [
+              "2026-10-28",
+              ["10:00", "10:30", "11:00", "11:30", "12:00"],
+              "available",
+            ],
             ["2026-10-29", ["09:00", "09:30", "10:00", "10:30"], "available"],
             ["2026-10-30", ["10:00", "10:30", "11:00"], "available"],
           ]),
@@ -435,9 +512,21 @@ export const INITIAL_POLLS: PollData[] = [
         avatarColor: "#2563EB",
         slots: {
           ...buildSlots([
-            ["2026-10-27", ["10:00", "10:30", "11:00", "11:30", "12:00"], "available"],
-            ["2026-10-28", ["10:00", "10:30", "11:00", "11:30", "14:00", "14:30"], "available"],
-            ["2026-10-29", ["11:00", "11:30", "12:00", "14:00", "14:30"], "available"],
+            [
+              "2026-10-27",
+              ["10:00", "10:30", "11:00", "11:30", "12:00"],
+              "available",
+            ],
+            [
+              "2026-10-28",
+              ["10:00", "10:30", "11:00", "11:30", "14:00", "14:30"],
+              "available",
+            ],
+            [
+              "2026-10-29",
+              ["11:00", "11:30", "12:00", "14:00", "14:30"],
+              "available",
+            ],
             ["2026-10-30", ["09:30", "10:00", "10:30"], "available"],
           ]),
           "2026-10-27T13:00": "if_needed",
@@ -448,32 +537,46 @@ export const INITIAL_POLLS: PollData[] = [
         id: "p_priya",
         guestSessionId: "slt_priya",
         name: "Priya",
-        role: "Head of Product",
+        role: "Product",
         city: "NYC",
         timezone: "America/New_York",
         avatarColor: "#7C3AED",
-        slots: {
-          ...buildSlots([
-            ["2026-10-27", ["10:30", "11:00", "11:30", "13:30", "14:00"], "available"],
-            ["2026-10-28", ["10:00", "10:30", "11:00", "11:30", "14:00", "14:30"], "available"],
-            ["2026-10-29", ["11:00", "11:30", "14:00", "14:30", "15:00"], "available"],
-            ["2026-10-30", ["10:00", "10:30", "11:00", "11:30"], "available"],
-          ]),
-        },
+        slots: buildSlots([
+          [
+            "2026-10-27",
+            ["10:30", "11:00", "11:30", "13:30", "14:00"],
+            "available",
+          ],
+          [
+            "2026-10-28",
+            ["10:00", "10:30", "11:00", "11:30", "14:00", "14:30"],
+            "available",
+          ],
+          [
+            "2026-10-29",
+            ["11:00", "11:30", "14:00", "14:30", "15:00"],
+            "available",
+          ],
+          ["2026-10-30", ["10:00", "10:30", "11:00", "11:30"], "available"],
+        ]),
       },
       {
         id: "p_you",
         guestSessionId: "slt_guest_local",
         name: "Alex",
-        role: "You · Guest",
+        role: "You",
         city: "NYC",
         timezone: "America/New_York",
-        avatarColor: "#10B981",
+        avatarColor: "#059669",
         isCurrentUser: true,
         slots: {
           ...buildSlots([
             ["2026-10-27", ["10:00", "10:30", "11:00", "11:30"], "available"],
-            ["2026-10-28", ["10:00", "10:30", "11:00", "11:30", "14:00", "14:30"], "available"],
+            [
+              "2026-10-28",
+              ["10:00", "10:30", "11:00", "11:30", "14:00", "14:30"],
+              "available",
+            ],
             ["2026-10-29", ["11:00", "11:30", "14:00", "14:30"], "available"],
             ["2026-10-30", ["10:00", "10:30", "11:00"], "available"],
           ]),
@@ -486,9 +589,9 @@ export const INITIAL_POLLS: PollData[] = [
   {
     id: "pol_yc_offsite",
     slug: "yc-w27-cofounder-offsite",
-    title: "YC W27 Cofounder Offsite & Roadmap Jam",
+    title: "YC W27 Cofounder Offsite",
     description:
-      "Locking our 60-minute sprint planning and demo day narrative architecture session.",
+      "60-minute sprint planning and demo day narrative review.",
     themeTint: "emerald",
     hostName: "Marcus Vance",
     timezone: "America/Los_Angeles",
@@ -499,11 +602,7 @@ export const INITIAL_POLLS: PollData[] = [
     durationMinutes: 60,
     status: "OPEN",
     lockedLocation: "San Francisco · Dogpatch Studio",
-    reactions: [
-      { emoji: "🚀", label: "Demo day ready", count: 3, userReacted: true },
-      { emoji: "☕", label: "Blue Bottle", count: 4, userReacted: false },
-      { emoji: "🔥", label: "Let's go", count: 5, userReacted: true },
-    ],
+    reactions: [],
     participants: [
       {
         id: "p_yc_1",
@@ -514,8 +613,16 @@ export const INITIAL_POLLS: PollData[] = [
         timezone: "America/Los_Angeles",
         avatarColor: "#059669",
         slots: buildSlots([
-          ["2026-11-03", ["10:00", "10:30", "11:00", "11:30", "13:00", "13:30"], "available"],
-          ["2026-11-04", ["09:30", "10:00", "10:30", "11:00", "14:00", "14:30"], "available"],
+          [
+            "2026-11-03",
+            ["10:00", "10:30", "11:00", "11:30", "13:00", "13:30"],
+            "available",
+          ],
+          [
+            "2026-11-04",
+            ["09:30", "10:00", "10:30", "11:00", "14:00", "14:30"],
+            "available",
+          ],
           ["2026-11-05", ["10:00", "10:30", "11:00", "11:30"], "available"],
         ]),
       },
@@ -523,7 +630,7 @@ export const INITIAL_POLLS: PollData[] = [
         id: "p_yc_2",
         guestSessionId: "slt_claire",
         name: "Claire",
-        role: "Visiting Partner",
+        role: "Partner",
         city: "SF",
         timezone: "America/Los_Angeles",
         avatarColor: "#D97706",
@@ -541,7 +648,7 @@ export const INITIAL_POLLS: PollData[] = [
         id: "p_yc_3",
         guestSessionId: "slt_kenji",
         name: "Kenji",
-        role: "Founding Design",
+        role: "Design",
         city: "TYO",
         timezone: "Asia/Tokyo",
         avatarColor: "#2563EB",
@@ -557,14 +664,18 @@ export const INITIAL_POLLS: PollData[] = [
         id: "p_yc_you",
         guestSessionId: "slt_guest_local",
         name: "Alex",
-        role: "You · Guest",
+        role: "You",
         city: "NYC",
         timezone: "America/New_York",
         avatarColor: "#10B981",
         isCurrentUser: true,
         slots: buildSlots([
           ["2026-11-03", ["10:00", "10:30", "11:00", "11:30"], "available"],
-          ["2026-11-04", ["10:00", "10:30", "11:00", "11:30", "13:00", "13:30"], "available"],
+          [
+            "2026-11-04",
+            ["10:00", "10:30", "11:00", "11:30", "13:00", "13:30"],
+            "available",
+          ],
           ["2026-11-05", ["10:00", "10:30", "11:00"], "available"],
         ]),
       },
@@ -583,13 +694,12 @@ export const INITIAL_POLLS: PollData[] = [
     dayStartHour: 10,
     dayEndHour: 16,
     slotMinutes: 30,
-    durationMinutes: 60,
-    status: "OPEN",
+    durationMinutes: 45,
+    status: "LOCKED",
+    lockedSlotStart: "2026-10-28T11:00",
+    lockedSlotEnd: "2026-10-28T12:00",
     lockedLocation: "meet.slotted.app/design-crit",
-    reactions: [
-      { emoji: "✨", label: "Craft", count: 6, userReacted: true },
-      { emoji: "👍", label: "Ready", count: 4, userReacted: false },
-    ],
+    reactions: [],
     participants: [
       {
         id: "p_dc_1",
@@ -600,7 +710,11 @@ export const INITIAL_POLLS: PollData[] = [
         timezone: "Europe/London",
         avatarColor: "#D97706",
         slots: buildSlots([
-          ["2026-10-28", ["11:00", "11:30", "12:00", "12:30", "13:00"], "available"],
+          [
+            "2026-10-28",
+            ["11:00", "11:30", "12:00", "12:30", "13:00"],
+            "available",
+          ],
           ["2026-10-29", ["10:30", "11:00", "11:30", "12:00"], "available"],
           ["2026-10-30", ["11:00", "11:30", "12:00"], "available"],
         ]),
@@ -614,8 +728,16 @@ export const INITIAL_POLLS: PollData[] = [
         timezone: "America/Los_Angeles",
         avatarColor: "#059669",
         slots: buildSlots([
-          ["2026-10-28", ["11:00", "11:30", "12:00", "14:00", "14:30"], "available"],
-          ["2026-10-29", ["11:00", "11:30", "12:00", "13:30", "14:00"], "available"],
+          [
+            "2026-10-28",
+            ["11:00", "11:30", "12:00", "14:00", "14:30"],
+            "available",
+          ],
+          [
+            "2026-10-29",
+            ["11:00", "11:30", "12:00", "13:30", "14:00"],
+            "available",
+          ],
           ["2026-10-30", ["11:00", "11:30", "12:00"], "available"],
         ]),
       },
@@ -623,7 +745,7 @@ export const INITIAL_POLLS: PollData[] = [
         id: "p_dc_you",
         guestSessionId: "slt_guest_local",
         name: "Alex",
-        role: "You · Guest",
+        role: "You",
         city: "NYC",
         timezone: "America/New_York",
         avatarColor: "#10B981",
@@ -638,10 +760,6 @@ export const INITIAL_POLLS: PollData[] = [
   },
 ];
 
-/**
- * Natural Language Command Bar Parser
- * Parses strings like "Series A Partner Sync next Tue-Thu 9am-5pm 45m" into structured tokens
- */
 export interface ParsedNaturalPoll {
   title: string;
   dateLabels: string[];
@@ -650,43 +768,51 @@ export interface ParsedNaturalPoll {
   dayStartHour: number;
   dayEndHour: number;
   durationMinutes: number;
-  detectedTokens: Array<{ category: "title" | "dates" | "hours" | "duration"; text: string }>;
+  participantsExtracted: string[];
 }
 
 export function parseNaturalLanguagePoll(input: string): ParsedNaturalPoll {
-  const raw = input.trim() || "Series A Partner Sync next Tue–Thu 9am–4pm 60m";
+  const raw =
+    input.trim() ||
+    "Coffee with Alex and Sam next Tue or Thu afternoon 30m";
 
-  let durationMinutes = 60;
-  let durationText = "60m";
-  if (/\b30\s*(m|min|mins)\b/i.test(raw)) {
+  let durationMinutes = 30;
+  if (/\b15\s*(m|min|mins)\b/i.test(raw)) {
+    durationMinutes = 15;
+  } else if (/\b30\s*(m|min|mins)\b/i.test(raw)) {
     durationMinutes = 30;
-    durationText = "30m";
   } else if (/\b45\s*(m|min|mins)\b/i.test(raw)) {
     durationMinutes = 45;
-    durationText = "45m";
+  } else if (/\b(60\s*(m|min|mins)|1\s*h|1\s*hr|hour)\b/i.test(raw)) {
+    durationMinutes = 60;
   } else if (/\b90\s*(m|min|mins)\b/i.test(raw)) {
     durationMinutes = 90;
-    durationText = "90m";
+  } else if (/coffee|quick|catchup/i.test(raw)) {
+    durationMinutes = 30;
+  } else {
+    durationMinutes = 45;
   }
 
   let dayStartHour = 9;
-  let dayEndHour = 16;
-  let timeRangeLabel = "09:00 AM – 04:00 PM";
+  let dayEndHour = 17;
+  let timeRangeLabel = "09:00 – 17:00";
 
   if (/morning/i.test(raw)) {
     dayStartHour = 9;
     dayEndHour = 13;
-    timeRangeLabel = "09:00 AM – 01:00 PM (Mornings)";
+    timeRangeLabel = "09:00 – 13:00";
   } else if (/afternoon/i.test(raw)) {
-    dayStartHour = 12;
-    dayEndHour = 17;
-    timeRangeLabel = "12:00 PM – 05:00 PM (Afternoons)";
+    dayStartHour = 13;
+    dayEndHour = 18;
+    timeRangeLabel = "13:00 – 18:00";
   } else if (/evening|dinner/i.test(raw)) {
     dayStartHour = 17;
     dayEndHour = 21;
-    timeRangeLabel = "05:00 PM – 09:00 PM (Evenings)";
+    timeRangeLabel = "17:00 – 21:00";
   } else {
-    const timeMatch = raw.match(/(\d{1,2})\s*(am|pm)?\s*[-–to]+\s*(\d{1,2})\s*(am|pm)?/i);
+    const timeMatch = raw.match(
+      /(\d{1,2})\s*(am|pm)?\s*[-–to]+\s*(\d{1,2})\s*(am|pm)?/i
+    );
     if (timeMatch) {
       let s = parseInt(timeMatch[1], 10);
       const sMeridiem = (timeMatch[2] || "am").toLowerCase();
@@ -696,36 +822,49 @@ export function parseNaturalLanguagePoll(input: string): ParsedNaturalPoll {
       if (eMeridiem === "pm" && e < 12) e += 12;
       if (e > s && e - s >= 2 && e <= 22) {
         dayStartHour = s;
-        dayEndHour = Math.min(s + 8, e);
-        timeRangeLabel = `${s}:00 ${sMeridiem.toUpperCase()} – ${e}:00 ${eMeridiem.toUpperCase()}`;
+        dayEndHour = Math.min(s + 9, e);
+        timeRangeLabel = `${String(dayStartHour).padStart(2, "0")}:00 – ${String(dayEndHour).padStart(2, "0")}:00`;
       }
     }
   }
 
   let candidateDates = ["2026-10-27", "2026-10-28", "2026-10-29"];
-  let dateLabels = ["Tue Oct 27", "Wed Oct 28", "Thu Oct 29"];
-
-  if (/mon.*wed/i.test(raw)) {
+  if (/tue\s*(or|and|,)\s*thu/i.test(raw)) {
+    candidateDates = ["2026-10-27", "2026-10-29"];
+  } else if (/mon.*wed/i.test(raw)) {
     candidateDates = ["2026-10-26", "2026-10-27", "2026-10-28"];
-    dateLabels = ["Mon Oct 26", "Tue Oct 27", "Wed Oct 28"];
   } else if (/wed.*fri/i.test(raw)) {
     candidateDates = ["2026-10-28", "2026-10-29", "2026-10-30"];
-    dateLabels = ["Wed Oct 28", "Thu Oct 29", "Fri Oct 30"];
   } else if (/tue.*fri/i.test(raw)) {
     candidateDates = ["2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30"];
-    dateLabels = ["Tue Oct 27", "Wed Oct 28", "Thu Oct 29", "Fri Oct 30"];
   }
 
-  // Strip known time/day keywords for clean title
+  const dateLabels = candidateDates.map((d) => {
+    const hdr = formatDateHeader(d);
+    return `${hdr.weekdayShort} ${hdr.dayNum}`;
+  });
+
+  // Extract names after "with ..." if present
+  const participantsExtracted: string[] = [];
+  const withMatch = raw.match(/\bwith\s+([A-Z][a-z]+(?:\s+(?:and|&|,)\s+[A-Z][a-z]+)*)/);
+  if (withMatch && withMatch[1]) {
+    const names = withMatch[1]
+      .split(/\s+(?:and|&|,)\s+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    participantsExtracted.push(...names);
+  }
+
   const cleanedTitle = raw
-    .replace(/\b(next|this)\s+[a-z–-]+/gi, "")
+    .replace(/\b(next|this)\s+[a-z\s,–-]+/gi, "")
     .replace(/(\d{1,2})\s*(am|pm)?\s*[-–to]+\s*(\d{1,2})\s*(am|pm)?/gi, "")
-    .replace(/\b(30|45|60|90)\s*(m|min|mins)\b/gi, "")
-    .replace(/\b(mornings?|afternoons?|evenings?|between|and)\b/gi, "")
+    .replace(/\b(15|30|45|60|90)\s*(m|min|mins)\b/gi, "")
+    .replace(/\b(mornings?|afternoons?|evenings?|between|and\s+\d+)\b/gi, "")
     .replace(/\s+/g, " ")
     .trim();
 
-  const title = cleanedTitle.length >= 3 ? cleanedTitle : "Product Architecture & Design Sync";
+  const title =
+    cleanedTitle.length >= 3 ? cleanedTitle : "Coffee with Alex and Sam";
 
   return {
     title,
@@ -735,21 +874,19 @@ export function parseNaturalLanguagePoll(input: string): ParsedNaturalPoll {
     dayStartHour,
     dayEndHour,
     durationMinutes,
-    detectedTokens: [
-      { category: "title", text: title },
-      { category: "dates", text: dateLabels.join(" · ") },
-      { category: "hours", text: timeRangeLabel },
-      { category: "duration", text: durationText },
-    ],
+    participantsExtracted,
   };
 }
 
-/**
- * Generates an RFC-5545 .ics calendar file string for downloading
- */
-export function generateIcsContent(poll: PollData, window: RankedWindow): string {
+export function generateIcsContent(
+  poll: PollData,
+  window: RankedWindow
+): string {
   const [y, m, d] = window.date.split("-");
-  const startHh = String(Math.floor(window.startTimeMinutes / 60)).padStart(2, "0");
+  const startHh = String(Math.floor(window.startTimeMinutes / 60)).padStart(
+    2,
+    "0"
+  );
   const startMm = String(window.startTimeMinutes % 60).padStart(2, "0");
   const endHh = String(Math.floor(window.endTimeMinutes / 60)).padStart(2, "0");
   const endMm = String(window.endTimeMinutes % 60).padStart(2, "0");
@@ -762,7 +899,7 @@ export function generateIcsContent(poll: PollData, window: RankedWindow): string
   return [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//Slotted//Multiplayer Time Consensus//EN",
+    "PRODID:-//slotted//EN",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
     "BEGIN:VEVENT",
@@ -770,8 +907,8 @@ export function generateIcsContent(poll: PollData, window: RankedWindow): string
     `SUMMARY:${poll.title}`,
     `DTSTART;TZID=${poll.timezone}:${dtStart}`,
     `DTEND;TZID=${poll.timezone}:${dtEnd}`,
-    `DESCRIPTION:${poll.description}\\n\\nConfirmed via Slotted (${window.totalAttendingCount}/${window.totalParticipants} attending: ${attendees})`,
-    `LOCATION:${poll.lockedLocation || "Slotted Video Room"}`,
+    `DESCRIPTION:${poll.description}\\n\\nConfirmed (${window.totalAttendingCount}/${window.totalParticipants}: ${attendees})`,
+    `LOCATION:${poll.lockedLocation || "Video call"}`,
     "STATUS:CONFIRMED",
     "END:VEVENT",
     "END:VCALENDAR",

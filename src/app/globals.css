@@ -7,219 +7,81 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
-  --font-serif: var(--font-instrument-serif), Georgia, serif;
-  --font-heading: var(--font-geist-sans);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
+  --font-sans: var(--font-space-grotesk), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, monospace;
+  --font-heading: var(--font-space-grotesk);
   --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
   --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
   --color-card: var(--card);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
 }
 
 :root {
-  /* Slotted Core Design System Tokens: Liquid Glass on Grainy Flat, Framed by Arc */
-  --arc-frame-bg: linear-gradient(135deg, #EAE6DF 0%, #E2DDD4 50%, #DFEAE4 100%);
-  --arc-frame-locked: linear-gradient(135deg, #D1FAE5 0%, #E6F4EA 50%, #F7F6F2 100%);
-  --arc-frame-flex: linear-gradient(135deg, #FEF3C7 0%, #EFECE6 60%, #F7F6F2 100%);
-  --arc-frame-sunset: linear-gradient(135deg, #F3DFD6 0%, #EAE1D8 55%, #F7F6F2 100%);
-  --arc-frame-slate: linear-gradient(135deg, #DCE2EA 0%, #E5E8EC 55%, #F2F4F7 100%);
-
-  --bg-canvas: #F7F6F2;
+  --bg-canvas: #F6F5F2;
   --bg-surface: #EFECE6;
   --bg-elevated: #FFFFFF;
   --text-primary: #141413;
-  --text-secondary: #575551;
+  --text-secondary: #575550;
   --text-muted: #8A8780;
-  --border-subtle: #E4E1DA;
-  --border-strong: #CFCBC2;
-  --slot-optimal: #10B981;
-  --slot-if-needed: #F59E0B;
-  --slot-conflict: #F43F5E;
+  --border-subtle: #E2E0D8;
+  --border-strong: #C9C6BC;
 
-  /* Map to shadcn tokens */
-  --background: #F7F6F2;
+  --background: #F6F5F2;
   --foreground: #141413;
   --card: #FFFFFF;
   --card-foreground: #141413;
   --popover: #FFFFFF;
   --popover-foreground: #141413;
   --primary: #141413;
-  --primary-foreground: #F7F6F2;
+  --primary-foreground: #F6F5F2;
   --secondary: #EFECE6;
   --secondary-foreground: #141413;
   --muted: #EFECE6;
-  --muted-foreground: #575551;
+  --muted-foreground: #575550;
   --accent: #EFECE6;
   --accent-foreground: #141413;
-  --destructive: #F43F5E;
-  --border: #E4E1DA;
-  --input: #E4E1DA;
-  --ring: #10B981;
-  --radius: 0.625rem;
+  --destructive: #E11D48;
+  --border: #E2E0D8;
+  --input: #E2E0D8;
+  --ring: #141413;
+  --radius: 0.375rem;
 }
 
-/* 1. Signature Arc Browser Inset Framed Viewport */
-.arc-viewport-shell {
-  min-height: 100dvh;
-  padding: 6px;
-  background: var(--arc-frame-bg);
-  transition: background 600ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-@media (min-width: 768px) {
-  .arc-viewport-shell {
-    padding: 10px;
-  }
-}
-
-.arc-viewport-shell[data-atmosphere="emerald"] {
-  background: linear-gradient(135deg, #D5EFE1 0%, #E3EFE8 50%, #F2F6F3 100%);
-}
-
-.arc-viewport-shell[data-atmosphere="sunset"] {
-  background: var(--arc-frame-sunset);
-}
-
-.arc-viewport-shell[data-atmosphere="slate"] {
-  background: var(--arc-frame-slate);
-}
-
-.arc-viewport-shell[data-state="locked"] {
-  background: var(--arc-frame-locked) !important;
-}
-
-.arc-viewport-shell[data-state="flex"] {
-  background: var(--arc-frame-flex) !important;
-}
-
-.arc-inner-canvas {
-  min-height: calc(100dvh - 12px);
-  background-color: var(--bg-canvas);
-  border-radius: 14px;
-  border: 1px solid rgba(20, 20, 19, 0.08);
-  box-shadow:
-    0 1px 0 0 rgba(255, 255, 255, 0.85) inset,
-    0 8px 30px -6px rgba(20, 20, 19, 0.07);
-  overflow-x: clip;
-  position: relative;
-}
-
-@media (min-width: 768px) {
-  .arc-inner-canvas {
-    min-height: calc(100dvh - 20px);
-    border-radius: 18px;
-  }
-}
-
-/* 2. Primary Liquid Glass Surface (Floating Toolbars, Arc Peek Sheets, Sticky Nav) */
-.liquid-glass {
-  background: linear-gradient(
-    135deg,
-    rgba(255, 255, 255, 0.82) 0%,
-    rgba(247, 246, 242, 0.68) 100%
-  );
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.78);
-  box-shadow:
-    0 1px 0 0 rgba(255, 255, 255, 0.95) inset,
-    0 -1px 0 0 rgba(20, 20, 19, 0.05) inset,
-    0 12px 32px -8px rgba(20, 20, 19, 0.08),
-    0 2px 6px -1px rgba(20, 20, 19, 0.04);
-}
-
-/* 3. Dark Liquid Glass (Arc Command Bar ⌘K & Host "Lock Time" Floating Dock) */
-.liquid-glass-dark {
-  background: linear-gradient(
-    180deg,
-    rgba(26, 26, 24, 0.90) 0%,
-    rgba(16, 16, 15, 0.95) 100%
-  );
-  backdrop-filter: blur(24px) saturate(160%);
-  -webkit-backdrop-filter: blur(24px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  box-shadow:
-    0 1px 0 0 rgba(255, 255, 255, 0.22) inset,
-    0 20px 40px -12px rgba(10, 10, 9, 0.38);
-}
-
-/* 4. Arc Easel Shareable Card Surface (Locked Event Ticket & Collectible Artifact) */
-.arc-easel-card {
-  background:
-    radial-gradient(120% 100% at 0% 0%, rgba(16, 185, 129, 0.09) 0%, transparent 60%),
-    linear-gradient(180deg, #FFFFFF 0%, #FAF9F5 100%);
-  border-radius: 20px;
-  border: 1px solid rgba(20, 20, 19, 0.09);
-  box-shadow:
-    0 2px 0 0 #FFFFFF inset,
-    0 20px 45px -15px rgba(20, 20, 19, 0.10),
-    0 0 0 4px rgba(255, 255, 255, 0.65);
-}
-
-/* 5. Diagonal Hatch Pattern for "If-Needed" Soft Availability */
+/* Diagonal Hatch Pattern for "If-Needed" Soft Availability */
 .slot-hatch-amber {
   background-image: repeating-linear-gradient(
     -45deg,
-    rgba(245, 158, 11, 0.16),
-    rgba(245, 158, 11, 0.16) 4px,
-    rgba(245, 158, 11, 0.05) 4px,
-    rgba(245, 158, 11, 0.05) 8px
+    rgba(217, 119, 6, 0.16),
+    rgba(217, 119, 6, 0.16) 4px,
+    rgba(217, 119, 6, 0.04) 4px,
+    rgba(217, 119, 6, 0.04) 8px
   );
 }
 
 .slot-hatch-mixed {
   background-image: repeating-linear-gradient(
     -45deg,
-    rgba(245, 158, 11, 0.20),
-    rgba(245, 158, 11, 0.20) 3px,
+    rgba(217, 119, 6, 0.18),
+    rgba(217, 119, 6, 0.18) 3px,
     transparent 3px,
-    transparent 8px
+    transparent 7px
   );
-}
-
-/* Architectural Crosshair Marker */
-.crosshair-plus {
-  position: relative;
-}
-.crosshair-plus::before,
-.crosshair-plus::after {
-  content: "";
-  position: absolute;
-  background-color: #8A8780;
-  pointer-events: none;
 }
 
 @layer base {
@@ -229,7 +91,7 @@
   body {
     background-color: var(--bg-canvas);
     color: var(--text-primary);
-    font-feature-settings: "rlig" 1, "calt" 1;
+    font-feature-settings: "ss01" 1, "zero" 1;
   }
   html {
     @apply font-sans scroll-smooth;

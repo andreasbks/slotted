@@ -2,42 +2,65 @@
 
 import React, { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
+  ArrowLeft,
+  ArrowUpRight,
   Calendar,
+  Check,
   Clock,
-  Command,
+  Copy,
   CornerDownLeft,
-  Sparkles,
-  Wand2,
-  ArrowDown,
-  RotateCcw,
+  Globe,
+  SlidersHorizontal,
+  Terminal,
+  Trash2,
+  Users,
 } from "lucide-react";
 import {
-  AtmosphereTheme,
   BrushMode,
   INITIAL_POLLS,
   PollData,
+  STORAGE_KEY_GUEST,
+  STORAGE_KEY_TZ,
+  TIMEZONE_OPTIONS,
+  computeRankedWindows,
+  formatDateHeader,
+  formatMinutesToDisplay,
+  loadStoredPolls,
   parseNaturalLanguagePoll,
+  saveStoredPolls,
 } from "@/lib/slotted-data";
 import { PollWorkspace } from "./poll-workspace";
-import { ArcCommandModal } from "./arc-command-modal";
-import { EditorialBentoAndComparison } from "./editorial-bento";
 
-const STORAGE_KEY_POLLS = "slotted_prototype_polls_v2";
-const STORAGE_KEY_GUEST = "slotted_prototype_guest_v2";
-const STORAGE_KEY_ATMOSPHERE = "slotted_prototype_atmosphere_v2";
+const MANUAL_CALENDAR_DAYS = [
+  { iso: "2026-10-26", day: "Mon", num: "26", month: "Oct" },
+  { iso: "2026-10-27", day: "Tue", num: "27", month: "Oct" },
+  { iso: "2026-10-28", day: "Wed", num: "28", month: "Oct" },
+  { iso: "2026-10-29", day: "Thu", num: "29", month: "Oct" },
+  { iso: "2026-10-30", day: "Fri", num: "30", month: "Oct" },
+  { iso: "2026-11-02", day: "Mon", num: "02", month: "Nov" },
+  { iso: "2026-11-03", day: "Tue", num: "03", month: "Nov" },
+  { iso: "2026-11-04", day: "Wed", num: "04", month: "Nov" },
+  { iso: "2026-11-05", day: "Thu", num: "05", month: "Nov" },
+  { iso: "2026-11-06", day: "Fri", num: "06", month: "Nov" },
+];
 
 interface SlottedAppShellProps {
   initialSlug?: string;
   initialViewMode?: "landing" | "poll";
   initialLocked?: boolean;
+  initialManualMode?: boolean;
 }
 
 export function SlottedAppShell({
   initialSlug,
   initialViewMode = "landing",
   initialLocked = false,
+  initialManualMode = false,
 }: SlottedAppShellProps) {
+  const router = useRouter();
+
   const [polls, setPolls] = useState<PollData[]>(() => {
     if (!initialLocked) return INITIAL_POLLS;
     return INITIAL_POLLS.map((p, idx) =>
@@ -46,61 +69,87 @@ export function SlottedAppShell({
         : p
     );
   });
+
   const [activeSlug, setActiveSlug] = useState<string>(
     initialSlug || INITIAL_POLLS[0].slug
   );
   const [viewMode, setViewMode] = useState<"landing" | "poll">(initialViewMode);
-  const [atmosphere, setAtmosphere] = useState<AtmosphereTheme>("linen");
   const [guestName, setGuestName] = useState<string>("Alex");
   const [viewerTimezone, setViewerTimezone] =
     useState<string>("America/New_York");
   const [activeBrush, setActiveBrush] = useState<BrushMode>("available");
-  const [commandModalOpen, setCommandModalOpen] = useState<boolean>(false);
+  const [copiedPollId, setCopiedPollId] = useState<string | null>(null);
 
-  // Hero Natural-Language Quick-Create input state
-  const [heroInput, setHeroInput] = useState<string>(
-    "Series A Partner Sync next Tue-Thu 9am-4pm 60m"
+  // Composer state
+  const [promptText, setPromptText] = useState<string>("");
+  const [manualMode, setManualMode] = useState<boolean>(initialManualMode);
+
+  // Manual configuration fields
+  const [manualTitle, setManualTitle] = useState<string>(
+    "Q4 Architecture Sync"
+  );
+  const [manualDates, setManualDates] = useState<string[]>([
+    "2026-10-27",
+    "2026-10-28",
+    "2026-10-29",
+  ]);
+  const [manualStartHour, setManualStartHour] = useState<number>(9);
+  const [manualEndHour, setManualEndHour] = useState<number>(17);
+  const [manualDuration, setManualDuration] = useState<number>(30);
+
+  useEffect(() => {
+    setManualMode(initialManualMode);
+  }, [initialManualMode]);
+
+  // Hydrate from localStorage on mount
+  useEffect(() => {
+    const stored = loadStoredPolls();
+    if (initialLocked && initialSlug) {
+      setPolls(
+        stored.map((p) =>
+          p.slug === initialSlug ? { ...p, status: "LOCKED" } : p
+        )
+      );
+    } else {
+      setPolls(stored);
+    }
+
+    try {
+      const g = localStorage.getItem(STORAGE_KEY_GUEST);
+      if (g) setGuestName(g);
+      const tz = localStorage.getItem(STORAGE_KEY_TZ);
+      if (tz && TIMEZONE_OPTIONS.some((o) => o.id === tz)) {
+        setViewerTimezone(tz);
+      }
+    } catch {}
+  }, [initialLocked, initialSlug]);
+
+  // Sync manual fields when user types in prompt before toggling "Set manually"
+  const parsedPrompt = useMemo(
+    () => parseNaturalLanguagePoll(promptText),
+    [promptText]
   );
 
-  // Hydrate from localStorage on client mount
-  useEffect(() => {
-    try {
-      const savedPolls = localStorage.getItem(STORAGE_KEY_POLLS);
-      if (savedPolls) {
-        const parsed = JSON.parse(savedPolls);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          setPolls(parsed);
-        }
-      }
-      const savedGuest = localStorage.getItem(STORAGE_KEY_GUEST);
-      if (savedGuest) {
-        setGuestName(savedGuest);
-      }
-      const savedAtmo = localStorage.getItem(
-        STORAGE_KEY_ATMOSPHERE
-      ) as AtmosphereTheme | null;
-      if (
-        savedAtmo &&
-        ["linen", "emerald", "sunset", "slate"].includes(savedAtmo)
-      ) {
-        setAtmosphere(savedAtmo);
-      }
-    } catch {
-      // Ignore storage errors
+  const handleToggleManualMode = () => {
+    if (!manualMode && promptText.trim().length > 0) {
+      setManualTitle(parsedPrompt.title);
+      setManualDates(parsedPrompt.candidateDates);
+      setManualStartHour(parsedPrompt.dayStartHour);
+      setManualEndHour(parsedPrompt.dayEndHour);
+      setManualDuration(parsedPrompt.durationMinutes);
     }
-  }, []);
+    setManualMode((prev) => !prev);
+  };
 
-  // Global Cmd+K / Ctrl+K listener
-  useEffect(() => {
-    const handleGlobalKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setCommandModalOpen((prev) => !prev);
-      }
-    };
-    window.addEventListener("keydown", handleGlobalKey);
-    return () => window.removeEventListener("keydown", handleGlobalKey);
-  }, []);
+  const toggleManualDate = (iso: string) => {
+    setManualDates((prev) =>
+      prev.includes(iso)
+        ? prev.length > 1
+          ? prev.filter((d) => d !== iso)
+          : prev
+        : [...prev, iso].sort()
+    );
+  };
 
   const activePoll = useMemo(() => {
     return polls.find((p) => p.slug === activeSlug) || polls[0];
@@ -109,22 +158,21 @@ export function SlottedAppShell({
   const handleUpdatePoll = (updated: PollData) => {
     setPolls((prev) => {
       const next = prev.map((p) => (p.id === updated.id ? updated : p));
-      try {
-        localStorage.setItem(STORAGE_KEY_POLLS, JSON.stringify(next));
-      } catch {}
+      saveStoredPolls(next);
       return next;
     });
   };
 
-  const handleCreatePoll = (newPoll: PollData) => {
+  const handleDeletePoll = (id: string) => {
     setPolls((prev) => {
-      const next = [newPoll, ...prev];
-      try {
-        localStorage.setItem(STORAGE_KEY_POLLS, JSON.stringify(next));
-      } catch {}
+      if (prev.length <= 1) return prev;
+      const next = prev.filter((p) => p.id !== id);
+      saveStoredPolls(next);
+      if (activePoll.id === id) {
+        setActiveSlug(next[0].slug);
+      }
       return next;
     });
-    setActiveSlug(newPoll.slug);
   };
 
   const handleChangeGuestName = (name: string) => {
@@ -134,486 +182,613 @@ export function SlottedAppShell({
     } catch {}
   };
 
-  const handleChangeAtmosphere = (nextTheme: AtmosphereTheme) => {
-    setAtmosphere(nextTheme);
+  const handleChangeTimezone = (tz: string) => {
+    setViewerTimezone(tz);
     try {
-      localStorage.setItem(STORAGE_KEY_ATMOSPHERE, nextTheme);
+      localStorage.setItem(STORAGE_KEY_TZ, tz);
     } catch {}
   };
 
-  const handleResetDemoState = () => {
-    setPolls(INITIAL_POLLS);
-    setActiveSlug(INITIAL_POLLS[0].slug);
-    setAtmosphere("linen");
-    try {
-      localStorage.removeItem(STORAGE_KEY_POLLS);
-    } catch {}
-  };
+  const handleCreatePoll = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
 
-  const heroParsed = useMemo(
-    () => parseNaturalLanguagePoll(heroInput),
-    [heroInput]
-  );
+    const title = manualMode
+      ? manualTitle.trim() || "Untitled Poll"
+      : parsedPrompt.title;
+    const candidateDates = manualMode
+      ? manualDates
+      : parsedPrompt.candidateDates;
+    const dayStartHour = manualMode
+      ? manualStartHour
+      : parsedPrompt.dayStartHour;
+    const dayEndHour = manualMode
+      ? Math.max(manualStartHour + 2, manualEndHour)
+      : parsedPrompt.dayEndHour;
+    const durationMinutes = manualMode
+      ? manualDuration
+      : parsedPrompt.durationMinutes;
 
-  const handleHeroInstantCreate = (e: React.FormEvent) => {
-    e.preventDefault();
-    const slugBase = heroParsed.title
+    const slugBase = title
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-|-$/g, "")
       .slice(0, 28);
-    const slug = `${slugBase || "team-sync"}-${Math.floor(100 + Math.random() * 899)}`;
-    const dates = heroParsed.candidateDates;
-    const d0 = dates[0];
-    const d1 = dates[1] || dates[0];
+    const slug = `${slugBase || "poll"}-${Math.floor(
+      100 + Math.random() * 899
+    )}`;
 
-    const created: PollData = {
+    const d0 = candidateDates[0];
+    const d1 = candidateDates[1] || candidateDates[0];
+    const h1 = String(dayStartHour + 1).padStart(2, "0");
+    const h2 = String(Math.min(dayEndHour - 1, dayStartHour + 2)).padStart(
+      2,
+      "0"
+    );
+
+    const extractedNames =
+      !manualMode && parsedPrompt.participantsExtracted.length > 0
+        ? parsedPrompt.participantsExtracted
+        : ["Elena", "Sam"];
+
+    const newPoll: PollData = {
       id: `pol_${Date.now().toString(36)}`,
       slug,
-      title: heroParsed.title,
-      description: `${heroParsed.timeRangeLabel} · ${heroParsed.durationMinutes}m`,
-      themeTint: atmosphere,
+      title,
+      description: `${String(dayStartHour).padStart(2, "0")}:00–${String(
+        dayEndHour
+      ).padStart(2, "0")}:00 · ${durationMinutes}m`,
+      themeTint: "linen",
       hostName: guestName || "Alex",
       timezone: viewerTimezone,
-      candidateDates: dates,
-      dayStartHour: heroParsed.dayStartHour,
-      dayEndHour: heroParsed.dayEndHour,
+      candidateDates,
+      dayStartHour,
+      dayEndHour,
       slotMinutes: 30,
-      durationMinutes: heroParsed.durationMinutes,
+      durationMinutes,
       status: "OPEN",
-      lockedLocation: "meet.slotted.app/instant",
-      reactions: [
-        { emoji: "🔥", label: "Locked in", count: 3, userReacted: true },
-        { emoji: "👍", label: "Ready", count: 4, userReacted: false },
-        { emoji: "☕", label: "Coffee", count: 2, userReacted: false },
-      ],
+      lockedLocation: `meet.slotted.app/${slugBase || "room"}`,
+      reactions: [],
       participants: [
         {
-          id: "p_hero_elena",
-          guestSessionId: "slt_elena",
-          name: "Elena",
-          role: "Partner",
+          id: "p_gen_1",
+          guestSessionId: "slt_gen_1",
+          name: extractedNames[0] || "Elena",
           city: "SF",
           timezone: "America/Los_Angeles",
-          avatarColor: "#059669",
+          avatarColor: "#10B981",
           slots: {
-            [`${d0}T10:00`]: "available",
-            [`${d0}T10:30`]: "available",
-            [`${d1}T10:00`]: "available",
-            [`${d1}T10:30`]: "available",
-            [`${d1}T11:00`]: "available",
-            [`${d1}T11:30`]: "available",
+            [`${d0}T${h1}:00`]: "available",
+            [`${d0}T${h1}:30`]: "available",
+            [`${d1}T${h1}:00`]: "available",
+            [`${d1}T${h1}:30`]: "available",
+            [`${d1}T${h2}:00`]: "available",
           },
         },
         {
-          id: "p_hero_marcus",
-          guestSessionId: "slt_marcus",
-          name: "Marcus",
-          role: "Founder",
-          city: "NYC",
-          timezone: "America/New_York",
-          avatarColor: "#141413",
+          id: "p_gen_2",
+          guestSessionId: "slt_gen_2",
+          name: extractedNames[1] || "Sam",
+          city: "London",
+          timezone: "Europe/London",
+          avatarColor: "#D97706",
           slots: {
-            [`${d0}T10:00`]: "available",
-            [`${d0}T10:30`]: "available",
-            [`${d1}T10:00`]: "available",
-            [`${d1}T10:30`]: "available",
-            [`${d1}T11:00`]: "available",
-            [`${d1}T14:00`]: "if_needed",
-            [`${d1}T14:30`]: "if_needed",
+            [`${d0}T${h1}:00`]: "if_needed",
+            [`${d0}T${h1}:30`]: "if_needed",
+            [`${d1}T${h1}:00`]: "available",
+            [`${d1}T${h1}:30`]: "available",
+            [`${d1}T${h2}:00`]: "available",
           },
         },
         {
-          id: "p_hero_you",
+          id: "p_gen_you",
           guestSessionId: "slt_guest_local",
           name: guestName || "Alex",
-          role: "You",
           city: "NYC",
           timezone: viewerTimezone,
-          avatarColor: "#10B981",
+          avatarColor: "#141413",
           isCurrentUser: true,
           slots: {
-            [`${d0}T10:00`]: "available",
-            [`${d0}T10:30`]: "available",
-            [`${d1}T10:00`]: "available",
-            [`${d1}T10:30`]: "available",
-            [`${d1}T11:00`]: "available",
+            [`${d1}T${h1}:00`]: "available",
+            [`${d1}T${h1}:30`]: "available",
           },
         },
       ],
     };
 
-    handleCreatePoll(created);
-    const el = document.getElementById("live-poll-workspace");
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth" });
-    }
+    const nextPolls = [newPoll, ...polls];
+    setPolls(nextPolls);
+    saveStoredPolls(nextPolls);
+    setActiveSlug(newPoll.slug);
+    setViewMode("poll");
+    router.push(`/p/${newPoll.slug}`);
   };
 
-  // Dynamic outer frame state
-  const frameState =
-    activePoll.status === "LOCKED"
-      ? "locked"
-      : activeBrush === "if_needed"
-      ? "flex"
-      : "polling";
+  const handleCopyPollLink = (slug: string, id: string) => {
+    const url =
+      typeof window !== "undefined"
+        ? `${window.location.origin}/p/${slug}`
+        : `https://slotted.app/p/${slug}`;
+    if (typeof navigator !== "undefined" && navigator.clipboard) {
+      navigator.clipboard.writeText(url).catch(() => {});
+    }
+    setCopiedPollId(id);
+    setTimeout(() => setCopiedPollId(null), 1800);
+  };
+
+  const currentTzOption =
+    TIMEZONE_OPTIONS.find((t) => t.id === viewerTimezone) || TIMEZONE_OPTIONS[1];
 
   return (
-    <div
-      className="arc-viewport-shell"
-      data-atmosphere={atmosphere}
-      data-state={frameState}
-    >
-      <div className="arc-inner-canvas flex flex-col justify-between">
-        {/* =========================================================
-            STICKY LIQUID GLASS NAVBAR (h-14)
-           ========================================================= */}
-        <header className="liquid-glass sticky top-2 z-40 mx-2 sm:mx-4 mt-2 rounded-full px-3.5 sm:px-5 h-14 flex items-center justify-between gap-2">
-          {/* Left: Logomark + Wordmark + Theme Dot Picker */}
+    <div className="min-h-dvh flex flex-col bg-[#F6F5F2] text-[#141413]">
+      {/* =========================================================
+          MINIMALIST TECHNICAL HEADER
+         ========================================================= */}
+      <header className="border-b border-[#E2E0D8] bg-[#F6F5F2]">
+        <div className="mx-auto flex h-13 max-w-5xl items-center justify-between px-4 sm:px-6">
+          {/* Left: Clean Wordmark */}
           <div className="flex items-center gap-3">
             <Link
               href="/"
               onClick={() => setViewMode("landing")}
-              className="flex items-center gap-2 group"
+              className="flex items-center gap-2 font-mono text-sm font-semibold tracking-tight text-[#141413]"
             >
-              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#141413] text-[#F7F6F2] shadow-2xs">
+              <span className="flex h-5 w-5 items-center justify-center rounded bg-[#141413] text-[#F6F5F2]">
                 <span className="flex gap-0.5">
-                  <span className="h-3.5 w-1 rounded-full bg-emerald-400" />
-                  <span className="h-3.5 w-1 translate-y-0.5 rounded-full bg-[#F7F6F2]" />
+                  <span className="h-2.5 w-0.5 bg-emerald-400" />
+                  <span className="h-2.5 w-0.5 translate-y-0.5 bg-[#F6F5F2]" />
                 </span>
               </span>
-              <span className="text-base font-medium tracking-[-0.03em] text-[#141413]">
-                Slotted
-              </span>
+              <span>slotted</span>
             </Link>
 
-            <span className="hidden sm:inline-block h-4 w-[1px] bg-[#E4E1DA]" />
+            {viewMode === "poll" && (
+              <>
+                <span className="font-mono text-xs text-[#C9C6BC]">/</span>
+                <span className="font-mono text-xs text-[#575550] truncate max-w-[200px] sm:max-w-xs">
+                  {activePoll.slug}
+                </span>
+              </>
+            )}
+          </div>
 
-            {/* Theme Dot Picker */}
-            <div
-              className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-[#E4E1DA] bg-white/80 px-2.5 py-1"
-              title="Theme"
-            >
-              <span className="font-mono text-[10px] uppercase tracking-wider text-[#8A8780] mr-0.5">
-                Theme
+          {/* Right: My Polls Link & Timezone Indicator */}
+          <div className="flex items-center gap-2 font-mono text-xs">
+            {viewMode === "poll" ? (
+              <Link
+                href="/"
+                onClick={() => setViewMode("landing")}
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#E2E0D8] bg-white px-2.5 py-1 text-xs font-medium text-[#141413] hover:bg-[#EFECE6] transition"
+              >
+                <ArrowLeft className="h-3 w-3" />
+                <span>New / My polls ({polls.length})</span>
+              </Link>
+            ) : (
+              <a
+                href="#my-polls"
+                className="inline-flex items-center gap-1.5 rounded-md border border-[#E2E0D8] bg-white px-2.5 py-1 text-xs font-medium text-[#141413] hover:bg-[#EFECE6] transition"
+              >
+                <span>My polls</span>
+                <span className="rounded bg-[#EFECE6] px-1.5 py-0.2 text-[10px] text-[#575550] tabular-nums">
+                  {polls.length}
+                </span>
+              </a>
+            )}
+
+            <div className="hidden sm:inline-flex items-center gap-1 rounded-md border border-[#E2E0D8] bg-[#FAF9F6] px-2.5 py-1 text-[11px] text-[#575550] tabular-nums">
+              <Globe className="h-3 w-3 text-[#8A8780]" />
+              <span>
+                {currentTzOption.shortCode} · {currentTzOption.utcLabel}
               </span>
-              {(
-                [
-                  { id: "linen", label: "Linen", color: "#DFDAD0" },
-                  { id: "emerald", label: "Mint", color: "#6EE7B7" },
-                  { id: "sunset", label: "Clay", color: "#F5B8A6" },
-                  { id: "slate", label: "Slate", color: "#94A3B8" },
-                ] as const
-              ).map((t) => (
-                <button
-                  key={t.id}
-                  type="button"
-                  aria-label={`Theme ${t.label}`}
-                  onClick={() => handleChangeAtmosphere(t.id)}
-                  className={`h-3.5 w-3.5 rounded-full transition-transform cursor-pointer ${
-                    atmosphere === t.id
-                      ? "scale-115 ring-2 ring-[#141413] ring-offset-1"
-                      : "opacity-75 hover:opacity-100"
-                  }`}
-                  style={{ backgroundColor: t.color }}
-                  title={t.label}
-                />
-              ))}
             </div>
           </div>
+        </div>
+      </header>
 
-          {/* Center: Canonical Nav Links */}
-          <div className="flex items-center gap-1 rounded-full border border-[#E4E1DA] bg-[#EFECE6]/80 p-1">
-            <button
-              type="button"
-              onClick={() => setViewMode("landing")}
-              className={`rounded-full px-3 py-1 font-mono text-[11px] transition cursor-pointer ${
-                viewMode === "landing"
-                  ? "bg-white text-[#141413] font-medium shadow-2xs"
-                  : "text-[#575551] hover:text-[#141413]"
-              }`}
-            >
-              Live poll
-            </button>
-            <a
-              href="#how-it-works"
-              onClick={() => setViewMode("landing")}
-              className="hidden md:inline-flex items-center rounded-full px-3 py-1 font-mono text-[11px] text-[#575551] hover:text-[#141413] transition cursor-pointer"
-            >
-              How it works
-            </a>
-            <button
-              type="button"
-              onClick={() => setViewMode("poll")}
-              className={`rounded-full px-3 py-1 font-mono text-[11px] transition cursor-pointer ${
-                viewMode === "poll"
-                  ? "bg-white text-[#141413] font-medium shadow-2xs"
-                  : "text-[#575551] hover:text-[#141413]"
-              }`}
-            >
-              My polls
-            </button>
-          </div>
-
-          {/* Right: ⌘K Trigger & New poll CTA */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setCommandModalOpen(true)}
-              className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-[#CFCBC2] bg-white px-3 py-1.5 font-mono text-xs text-[#141413] hover:bg-[#EFECE6] transition cursor-pointer"
-            >
-              <Command className="h-3.5 w-3.5 text-[#575551]" />
-              <span>⌘K</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setCommandModalOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded-full bg-[#141413] px-3.5 py-1.5 text-xs font-medium text-[#F7F6F2] shadow-2xs hover:bg-[#2a2a28] transition cursor-pointer"
-            >
-              <span>New poll</span>
-            </button>
-          </div>
-        </header>
-
-        {/* =========================================================
-            ARCHITECTURAL GUIDE RAILS CONTAINER
-           ========================================================= */}
-        <main className="mx-auto w-full max-w-[1320px] flex-1 border-x border-[#E4E1DA]/80">
-          {/* EDITORIAL HERO SECTION */}
-          {viewMode === "landing" && (
-            <section className="relative border-b border-[#E4E1DA] px-4 pt-10 pb-9 sm:px-8 sm:pt-12">
-              {/* Architectural + Crosshair Markers at Bottom Corners */}
-              <span
-                aria-hidden="true"
-                className="pointer-events-none absolute -bottom-2 left-3 font-mono text-xs text-[#8A8780]"
-              >
-                +
-              </span>
-              <span
-                aria-hidden="true"
-                className="pointer-events-none absolute -bottom-2 right-3 font-mono text-xs text-[#8A8780]"
-              >
-                +
-              </span>
-
-              <div className="mx-auto max-w-3xl text-center">
-                {/* Eyebrow Pill */}
-                <div className="inline-flex items-center gap-2 rounded-full border border-[#E4E1DA] bg-[#EFECE6]/90 px-3.5 py-1">
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-600" />
-                  <span className="font-mono text-[11px] font-medium tracking-wide text-[#575551]">
-                    Group scheduling
+      {/* =========================================================
+          MAIN VIEW: EITHER CENTERED COMPOSER + MY POLLS, OR POLL VIEW
+         ========================================================= */}
+      {viewMode === "poll" ? (
+        <main className="mx-auto w-full max-w-5xl flex-1 px-3 py-6 sm:px-6">
+          <PollWorkspace
+            poll={activePoll}
+            onUpdatePoll={handleUpdatePoll}
+            guestName={guestName}
+            onChangeGuestName={handleChangeGuestName}
+            viewerTimezone={viewerTimezone}
+            onChangeViewerTimezone={handleChangeTimezone}
+            activeBrush={activeBrush}
+            onChangeBrush={setActiveBrush}
+          />
+        </main>
+      ) : (
+        <main className="mx-auto w-full max-w-5xl flex-1 px-4 sm:px-6">
+          {/* =========================================================
+              ABOVE THE FOLD: CENTERED COMPOSER BOX ONLY (NO FLUFF)
+             ========================================================= */}
+          <section className="flex min-h-[520px] flex-col items-center justify-center py-14 sm:py-20">
+            <div className="w-full max-w-2xl">
+              {/* Minimal Top Bar above Box */}
+              <div className="mb-2.5 flex items-center justify-between font-mono text-xs text-[#575550]">
+                <span className="inline-flex items-center gap-1.5">
+                  <Terminal className="h-3.5 w-3.5 text-[#141413]" />
+                  <span>
+                    {manualMode ? "manual configuration" : "describe meeting"}
                   </span>
-                </div>
+                </span>
+                <span className="text-[11px] text-[#8A8780]">
+                  {manualMode
+                    ? `${manualDates.length}d · ${manualDuration}m`
+                    : "natural language"}
+                </span>
+              </div>
 
-                {/* Display Hero Headline: Scale Without Weight (400 Regular, -0.045em) + Instrument Serif Italic */}
-                <h1 className="mt-4 text-[40px] sm:text-[64px] md:text-[68px] font-normal leading-[1.02] tracking-[-0.045em] text-[#141413]">
-                  Find the hour everyone can{" "}
-                  <span className="font-serif italic font-normal text-emerald-800">
-                    actually
-                  </span>{" "}
-                  make.
-                </h1>
+              {/* Focused Flat Composer Card */}
+              <form
+                onSubmit={handleCreatePoll}
+                className="rounded-lg border border-[#C9C6BC] bg-white transition focus-within:border-[#141413]"
+              >
+                {!manualMode ? (
+                  /* DEFAULT PROMPT TEXTBOX MODE */
+                  <div className="p-4 sm:p-5">
+                    <textarea
+                      rows={3}
+                      aria-label="Poll description prompt"
+                      value={promptText}
+                      onChange={(e) => setPromptText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          handleCreatePoll();
+                        }
+                      }}
+                      placeholder="Coffee with Alex and Sam next Tue or Thu afternoon..."
+                      className="w-full resize-none bg-transparent font-sans text-base sm:text-lg text-[#141413] placeholder:text-[#8A8780] focus:outline-none"
+                      autoFocus
+                    />
 
-                <p className="mx-auto mt-3.5 max-w-xl text-base sm:text-lg leading-[1.5] tracking-[-0.01em] text-[#575551]">
-                  Pick a few days, send one link, and watch the overlap appear.
-                </p>
-
-                {/* Instant Natural-Language Quick-Create Bar right in the Hero */}
-                <form
-                  onSubmit={handleHeroInstantCreate}
-                  className="mx-auto mt-6 max-w-2xl rounded-[20px] border border-[#CFCBC2] bg-white p-2 shadow-sm transition focus-within:border-[#141413]"
-                >
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <div className="flex flex-1 items-center gap-2.5 px-3 py-1.5">
-                      <Wand2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                    {/* Quiet Live Parsed Spec Strip */}
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5 pt-3 border-t border-[#E2E0D8] font-mono text-[11px] text-[#575550]">
+                      <span className="rounded border border-[#E2E0D8] bg-[#FAF9F6] px-2 py-0.5 text-[#141413] font-medium">
+                        {parsedPrompt.title}
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded border border-[#E2E0D8] bg-[#FAF9F6] px-2 py-0.5 tabular-nums">
+                        <Calendar className="h-3 w-3 text-[#8A8780]" />
+                        {parsedPrompt.dateLabels.join(", ")}
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded border border-[#E2E0D8] bg-[#FAF9F6] px-2 py-0.5 tabular-nums">
+                        <Clock className="h-3 w-3 text-[#8A8780]" />
+                        {parsedPrompt.timeRangeLabel}
+                      </span>
+                      <span className="rounded border border-[#E2E0D8] bg-[#FAF9F6] px-2 py-0.5 tabular-nums">
+                        {parsedPrompt.durationMinutes}m
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  /* MANUAL CONFIGURATION MODE ("Set manually") */
+                  <div className="p-4 sm:p-5 space-y-4">
+                    {/* Title Input */}
+                    <div>
+                      <label className="block font-mono text-[11px] uppercase tracking-wider text-[#8A8780] mb-1.5">
+                        Title
+                      </label>
                       <input
                         type="text"
-                        aria-label="Quick-create poll prompt"
-                        value={heroInput}
-                        onChange={(e) => setHeroInput(e.target.value)}
-                        placeholder="Team dinner next Tue–Thu evening..."
-                        className="w-full bg-transparent text-sm text-[#141413] placeholder:text-[#8A8780] focus:outline-none"
+                        value={manualTitle}
+                        onChange={(e) => setManualTitle(e.target.value)}
+                        placeholder="Q4 Architecture Sync"
+                        className="w-full rounded-md border border-[#E2E0D8] bg-[#FAF9F6] px-3 py-2 text-sm font-medium text-[#141413] placeholder:text-[#8A8780] focus:border-[#141413] focus:bg-white focus:outline-none"
                       />
                     </div>
-                    <button
-                      type="submit"
-                      className="inline-flex items-center justify-center gap-2 rounded-full bg-[#141413] px-5 py-2.5 text-xs font-medium text-[#F7F6F2] transition hover:bg-emerald-700 cursor-pointer shrink-0"
-                    >
-                      <span>Create poll</span>
-                      <CornerDownLeft className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
 
-                  {/* Live Parsed Token Chips */}
-                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-[#E4E1DA]/80 px-3 pt-2 text-left">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/12 border border-emerald-600/25 px-2 py-0.5 font-mono text-[11px] font-medium text-emerald-950">
-                        <Sparkles className="h-2.5 w-2.5 text-emerald-600" />
-                        {heroParsed.title}
-                      </span>
-                      <span className="inline-flex items-center gap-1 rounded-full bg-[#EFECE6] px-2 py-0.5 font-mono text-[11px] text-[#141413]">
-                        <Calendar className="h-2.5 w-2.5 text-[#575551]" />
-                        {heroParsed.dateLabels.join(", ")}
-                      </span>
-                      <span className="inline-flex items-center gap-1 rounded-full bg-[#EFECE6] px-2 py-0.5 font-mono text-[11px] text-[#141413] tabular-nums">
-                        <Clock className="h-2.5 w-2.5 text-[#575551]" />
-                        {heroParsed.timeRangeLabel} · {heroParsed.durationMinutes}m
-                      </span>
+                    {/* Candidate Dates Grid */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="font-mono text-[11px] uppercase tracking-wider text-[#8A8780]">
+                          Dates ({manualDates.length} selected)
+                        </label>
+                        <span className="font-mono text-[10px] text-[#8A8780]">
+                          Click to toggle
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-5 gap-1.5">
+                        {MANUAL_CALENDAR_DAYS.map((d) => {
+                          const isSelected = manualDates.includes(d.iso);
+                          return (
+                            <button
+                              key={d.iso}
+                              type="button"
+                              onClick={() => toggleManualDate(d.iso)}
+                              className={`flex flex-col items-center rounded-md border py-2 font-mono text-xs transition cursor-pointer ${
+                                isSelected
+                                  ? "border-[#141413] bg-[#141413] text-[#F6F5F2] font-semibold"
+                                  : "border-[#E2E0D8] bg-[#FAF9F6] text-[#575550] hover:border-[#141413]/40"
+                              }`}
+                            >
+                              <span className="text-[10px] opacity-75">
+                                {d.day}
+                              </span>
+                              <span className="text-sm tabular-nums">
+                                {d.num}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
 
-                    <a
-                      href="#live-poll-workspace"
-                      className="inline-flex items-center gap-1 font-mono text-[11px] text-[#575551] hover:text-[#141413]"
-                    >
-                      <span>Try the live grid below</span>
-                      <ArrowDown className="h-3 w-3" />
-                    </a>
+                    {/* Hours, Duration & Timezone Row */}
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 pt-1">
+                      {/* Hours */}
+                      <div>
+                        <label className="block font-mono text-[11px] uppercase tracking-wider text-[#8A8780] mb-1.5">
+                          Window
+                        </label>
+                        <div className="flex items-center gap-1.5 font-mono text-xs">
+                          <select
+                            aria-label="Start hour"
+                            value={manualStartHour}
+                            onChange={(e) =>
+                              setManualStartHour(Number(e.target.value))
+                            }
+                            className="w-full rounded-md border border-[#E2E0D8] bg-[#FAF9F6] px-2 py-1.5 text-[#141413] tabular-nums focus:outline-none"
+                          >
+                            {[8, 9, 10, 11, 12, 13, 14].map((h) => (
+                              <option key={h} value={h}>
+                                {String(h).padStart(2, "0")}:00
+                              </option>
+                            ))}
+                          </select>
+                          <span className="text-[#8A8780]">–</span>
+                          <select
+                            aria-label="End hour"
+                            value={manualEndHour}
+                            onChange={(e) =>
+                              setManualEndHour(Number(e.target.value))
+                            }
+                            className="w-full rounded-md border border-[#E2E0D8] bg-[#FAF9F6] px-2 py-1.5 text-[#141413] tabular-nums focus:outline-none"
+                          >
+                            {[13, 14, 15, 16, 17, 18, 19, 20, 21].map((h) => (
+                              <option key={h} value={h}>
+                                {String(h).padStart(2, "0")}:00
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Duration */}
+                      <div>
+                        <label className="block font-mono text-[11px] uppercase tracking-wider text-[#8A8780] mb-1.5">
+                          Duration
+                        </label>
+                        <div className="flex rounded-md border border-[#E2E0D8] bg-[#FAF9F6] p-0.5 font-mono text-xs tabular-nums">
+                          {[15, 30, 45, 60].map((m) => (
+                            <button
+                              key={m}
+                              type="button"
+                              onClick={() => setManualDuration(m)}
+                              className={`flex-1 rounded py-1 transition cursor-pointer ${
+                                manualDuration === m
+                                  ? "bg-[#141413] text-[#F6F5F2] font-semibold"
+                                  : "text-[#575550] hover:text-[#141413]"
+                              }`}
+                            >
+                              {m}m
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Timezone */}
+                      <div>
+                        <label className="block font-mono text-[11px] uppercase tracking-wider text-[#8A8780] mb-1.5">
+                          Timezone
+                        </label>
+                        <select
+                          aria-label="Manual Timezone"
+                          value={viewerTimezone}
+                          onChange={(e) => handleChangeTimezone(e.target.value)}
+                          className="w-full rounded-md border border-[#E2E0D8] bg-[#FAF9F6] px-2.5 py-1.5 font-mono text-xs text-[#141413] tabular-nums focus:outline-none"
+                        >
+                          {TIMEZONE_OPTIONS.map((tz) => (
+                            <option key={tz.id} value={tz.id}>
+                              {tz.city} ({tz.shortCode})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
                   </div>
-                </form>
-              </div>
-            </section>
-          )}
+                )}
 
-          {/* =========================================================
-              EMBEDDED LIVE MULTI-PARTICIPANT POLL WORKSPACE
-             ========================================================= */}
-          <section
-            id="live-poll-workspace"
-            className="px-2 pt-5 pb-8 sm:px-6 sm:pt-7"
-          >
-            {/* Pre-Seeded Poll Switcher Tabs & Reset Button */}
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1">
-              <div className="flex flex-wrap items-center gap-1.5">
-                {polls.map((p) => {
-                  const isSelected = p.slug === activePoll.slug;
-                  return (
+                {/* Composer Bottom Action Bar */}
+                <div className="flex items-center justify-between border-t border-[#E2E0D8] bg-[#FAF9F6] px-4 py-2.5 rounded-b-lg">
+                  <button
+                    type="button"
+                    onClick={handleToggleManualMode}
+                    className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 font-mono text-xs font-medium transition cursor-pointer ${
+                      manualMode
+                        ? "border-[#141413] bg-[#141413] text-[#F6F5F2]"
+                        : "border-[#E2E0D8] bg-white text-[#141413] hover:bg-[#EFECE6]"
+                    }`}
+                  >
+                    <SlidersHorizontal className="h-3.5 w-3.5" />
+                    <span>{manualMode ? "Use textbox" : "Set manually"}</span>
+                  </button>
+
+                  <button
+                    type="submit"
+                    className="inline-flex items-center gap-2 rounded-md bg-[#141413] px-4 py-1.5 font-mono text-xs font-semibold text-[#F6F5F2] hover:bg-emerald-700 transition cursor-pointer"
+                  >
+                    <span>Create poll</span>
+                    <CornerDownLeft className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </form>
+
+              {/* Subtle 1-Click Prompt Examples */}
+              {!manualMode && (
+                <div className="mt-3 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-[#8A8780]">
+                  <span>try:</span>
+                  {[
+                    "Coffee with Alex next Tue or Thu afternoon 30m",
+                    "Series A Partner Sync Mon-Wed 10am-4pm 60m",
+                    "Design Crit Wed-Fri morning 45m",
+                  ].map((sample) => (
                     <button
-                      key={p.id}
+                      key={sample}
                       type="button"
-                      onClick={() => setActiveSlug(p.slug)}
-                      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 font-mono text-[11px] transition cursor-pointer ${
-                        isSelected
-                          ? "bg-[#141413] text-[#F7F6F2] font-medium shadow-2xs"
-                          : "border border-[#E4E1DA] bg-white text-[#575551] hover:text-[#141413]"
-                      }`}
+                      onClick={() => setPromptText(sample)}
+                      className="rounded border border-[#E2E0D8] bg-[#FAF9F6] px-2 py-0.5 text-[#575550] hover:border-[#C9C6BC] hover:text-[#141413] transition cursor-pointer"
                     >
-                      <span>{p.title}</span>
-                      {p.status === "LOCKED" && (
-                        <span className="rounded-full bg-emerald-400/20 px-1.5 text-[9px] text-emerald-300">
-                          Locked
-                        </span>
-                      )}
+                      {sample}
                     </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Link
-                  href={`/p/${activePoll.slug}`}
-                  className="font-mono text-[11px] text-[#575551] underline decoration-[#CFCBC2] underline-offset-2 hover:text-[#141413]"
-                >
-                  `/p/{activePoll.slug}` →
-                </Link>
-                <button
-                  type="button"
-                  onClick={handleResetDemoState}
-                  className="inline-flex items-center gap-1 rounded-full border border-[#E4E1DA] bg-white px-2.5 py-1 font-mono text-[10px] text-[#575551] hover:text-[#141413] transition cursor-pointer"
-                  title="Reset demo polls"
-                >
-                  <RotateCcw className="h-3 w-3" />
-                  Reset
-                </button>
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
-
-            {/* Interactive Poll Workspace Component */}
-            <PollWorkspace
-              poll={activePoll}
-              onUpdatePoll={handleUpdatePoll}
-              guestName={guestName}
-              onChangeGuestName={handleChangeGuestName}
-              viewerTimezone={viewerTimezone}
-              onChangeViewerTimezone={setViewerTimezone}
-              activeBrush={activeBrush}
-              onChangeBrush={setActiveBrush}
-            />
           </section>
 
-          {/* EDITORIAL BENTO GRID & CLOSING SECTION */}
-          {viewMode === "landing" && (
-            <EditorialBentoAndComparison
-              onOpenCommandBar={() => setCommandModalOpen(true)}
-              onTriggerLockDemo={() => {
-                handleUpdatePoll({
-                  ...activePoll,
-                  status: "LOCKED",
-                });
-                const el = document.getElementById("live-poll-workspace");
-                if (el) el.scrollIntoView({ behavior: "smooth" });
-              }}
-            />
-          )}
+          {/* =========================================================
+              BELOW THE FOLD: MY POLLS
+             ========================================================= */}
+          <section
+            id="my-polls"
+            className="border-t border-[#E2E0D8] py-12"
+          >
+            <div className="mb-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <h2 className="font-mono text-xs font-semibold uppercase tracking-wider text-[#141413]">
+                  My polls
+                </h2>
+                <span className="rounded bg-[#EFECE6] px-1.5 py-0.5 font-mono text-[11px] text-[#575550] tabular-nums">
+                  {polls.length}
+                </span>
+              </div>
+              <span className="font-mono text-[11px] text-[#8A8780]">
+                Click any poll to open grid
+              </span>
+            </div>
+
+            <div className="divide-y divide-[#E2E0D8] rounded-lg border border-[#E2E0D8] bg-white">
+              {polls.map((p) => {
+                const topWin = computeRankedWindows(p)[0];
+                const topDateHdr = topWin
+                  ? formatDateHeader(topWin.date)
+                  : null;
+                const topStartDisp = topWin
+                  ? formatMinutesToDisplay(
+                      topWin.startTimeMinutes,
+                      viewerTimezone,
+                      p.timezone,
+                      true
+                    )
+                  : null;
+
+                return (
+                  <div
+                    key={p.id}
+                    className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between hover:bg-[#FAF9F6] transition"
+                  >
+                    {/* Left: Status + Title + Meta */}
+                    <div
+                      onClick={() => {
+                        setActiveSlug(p.slug);
+                        setViewMode("poll");
+                        router.push(`/p/${p.slug}`);
+                      }}
+                      className="flex-1 min-w-0 cursor-pointer"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span
+                          className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase ${
+                            p.status === "LOCKED"
+                              ? "bg-emerald-600 text-white"
+                              : "bg-[#EFECE6] text-[#141413]"
+                          }`}
+                        >
+                          {p.status}
+                        </span>
+                        <span className="font-medium text-sm sm:text-base text-[#141413] truncate">
+                          {p.title}
+                        </span>
+                        <span className="font-mono text-xs text-[#8A8780] tabular-nums">
+                          · {p.durationMinutes}m
+                        </span>
+                      </div>
+
+                      <div className="mt-1.5 flex flex-wrap items-center gap-3 font-mono text-xs text-[#575550] tabular-nums">
+                        <span className="inline-flex items-center gap-1">
+                          <Users className="h-3 w-3 text-[#8A8780]" />
+                          {p.participants.length} responded
+                        </span>
+                        <span>·</span>
+                        <span>{p.candidateDates.length} candidate days</span>
+                        {topWin && topDateHdr && topStartDisp && (
+                          <>
+                            <span>·</span>
+                            <span className="text-emerald-800 font-medium">
+                              Best: {topDateHdr.weekdayShort}{" "}
+                              {topDateHdr.dayNum} at {topStartDisp.timeLabel} (
+                              {topWin.totalAttendingCount}/
+                              {topWin.totalParticipants})
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Right: Actions */}
+                    <div className="flex items-center gap-2 shrink-0 font-mono text-xs">
+                      <button
+                        type="button"
+                        onClick={() => handleCopyPollLink(p.slug, p.id)}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-[#E2E0D8] bg-white px-2.5 py-1.5 text-xs text-[#141413] hover:bg-[#EFECE6] transition cursor-pointer"
+                      >
+                        {copiedPollId === p.id ? (
+                          <>
+                            <Check className="h-3 w-3 text-emerald-600" />
+                            <span>Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-3 w-3 text-[#575550]" />
+                            <span>Copy link</span>
+                          </>
+                        )}
+                      </button>
+
+                      <Link
+                        href={`/p/${p.slug}`}
+                        onClick={() => {
+                          setActiveSlug(p.slug);
+                          setViewMode("poll");
+                        }}
+                        className="inline-flex items-center gap-1 rounded-md bg-[#141413] px-3 py-1.5 text-xs font-medium text-[#F6F5F2] hover:bg-[#292927] transition"
+                      >
+                        <span>Open</span>
+                        <ArrowUpRight className="h-3 w-3" />
+                      </Link>
+
+                      {polls.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePoll(p.id)}
+                          className="rounded-md border border-[#E2E0D8] bg-white p-1.5 text-[#8A8780] hover:border-rose-300 hover:text-rose-600 transition cursor-pointer"
+                          title="Delete poll"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
         </main>
-
-        {/* =========================================================
-            ARCHITECTURAL FOOTER WITH KEYBOARD SHORTCUT STRIP
-           ========================================================= */}
-        <footer className="border-t border-[#E4E1DA] bg-[#EFECE6]/60 px-4 py-7 sm:px-8">
-          <div className="mx-auto flex max-w-[1320px] flex-col gap-5 md:flex-row md:items-center md:justify-between">
-            <div className="flex items-center gap-3">
-              <span className="text-base font-medium tracking-[-0.03em] text-[#141413]">
-                Slotted
-              </span>
-              <span className="text-xs text-[#8A8780]">·</span>
-              <span className="text-xs text-[#575551]">
-                Pick a few days, send one link, and watch the overlap appear.
-              </span>
-            </div>
-
-            {/* Keyboard Shortcut Strip */}
-            <div className="flex flex-wrap items-center gap-3 font-mono text-[11px] text-[#575551]">
-              <span className="inline-flex items-center gap-1">
-                <kbd className="rounded border border-[#CFCBC2] bg-white px-1.5 py-0.5 text-[10px] text-[#141413]">
-                  ⌘K
-                </kbd>
-                New poll
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <kbd className="rounded border border-[#CFCBC2] bg-white px-1.5 py-0.5 text-[10px] text-[#141413]">
-                  1
-                </kbd>
-                Free
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <kbd className="rounded border border-[#CFCBC2] bg-white px-1.5 py-0.5 text-[10px] text-[#141413]">
-                  2
-                </kbd>
-                If needed
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <kbd className="rounded border border-[#CFCBC2] bg-white px-1.5 py-0.5 text-[10px] text-[#141413]">
-                  3
-                </kbd>
-                Erase
-              </span>
-            </div>
-          </div>
-        </footer>
-      </div>
-
-      {/* Global Command Modal (⌘K) */}
-      <ArcCommandModal
-        open={commandModalOpen}
-        onClose={() => setCommandModalOpen(false)}
-        polls={polls}
-        activePollSlug={activePoll.slug}
-        onSelectPoll={(slug) => setActiveSlug(slug)}
-        onCreatePoll={handleCreatePoll}
-        atmosphere={atmosphere}
-        onChangeAtmosphere={handleChangeAtmosphere}
-      />
+      )}
     </div>
   );
 }

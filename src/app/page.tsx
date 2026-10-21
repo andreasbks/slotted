@@ -1,5 +1,24 @@
+"use client";
+
+import { Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import { SlottedAppShell } from "@/components/slotted/slotted-app-shell";
 
+function HomeContent() {
+  const searchParams = useSearchParams();
+  const initialManual = searchParams?.get("manual") === "1";
+  return (
+    <SlottedAppShell
+      initialViewMode="landing"
+      initialManualMode={initialManual}
+    />
+  );
+}
+
 export default function HomePage() {
-  return <SlottedAppShell initialViewMode="landing" />;
+  return (
+    <Suspense fallback={null}>
+      <HomeContent />
+    </Suspense>
+  );
 }
