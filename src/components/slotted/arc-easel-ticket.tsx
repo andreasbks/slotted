@@ -103,7 +103,7 @@ export function ArcEaselTicket({
 
   return (
     <div className="mx-auto w-full max-w-3xl">
-      <div className="rounded-lg border border-[#E2E0D8] bg-white">
+      <div className="overflow-hidden rounded-2xl border border-[#E2E0D8] bg-white">
         {/* Flat Technical Header Bar */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E2E0D8] bg-[#FAF9F6] px-5 py-3.5">
           <div className="flex items-center gap-2.5">

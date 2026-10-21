@@ -451,12 +451,12 @@ export function PollWorkspace({
       )}
 
       {/* Flat Top Poll Control Bar */}
-      <div className="rounded-t-lg border border-[#E2E0D8] bg-[#FAF9F6] px-4 py-3 sm:px-5">
+      <div className="rounded-t-2xl border border-[#E2E0D8] bg-[#FAF9F6] px-4 py-3.5 sm:px-5">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           {/* Left: Status Badge + Poll Title + Meta */}
           <div className="flex flex-wrap items-center gap-2.5">
             <span
-              className={`inline-flex items-center gap-1.5 rounded px-2 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-wider ${
+              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-wider ${
                 poll.status === "LOCKED"
                   ? "bg-emerald-600 text-white"
                   : "bg-[#141413] text-[#F6F5F2]"
@@ -580,7 +580,7 @@ export function PollWorkspace({
       </div>
 
       {/* Main Poll Body */}
-      <div className="rounded-b-lg border-x border-b border-[#E2E0D8] bg-[#F6F5F2] p-3 sm:p-5">
+      <div className="rounded-b-2xl border-x border-b border-[#E2E0D8] bg-[#F6F5F2] p-3 sm:p-5">
         {poll.status === "LOCKED" && activeRankedWindow ? (
           <ArcEaselTicket
             poll={poll}
@@ -593,7 +593,7 @@ export function PollWorkspace({
             {/* Main Time Grid Column */}
             <div className="flex-1 min-w-0">
               {/* Flat Brush Bar */}
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-[#E2E0D8] bg-white px-3 py-2">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[#E2E0D8] bg-white px-3.5 py-2.5">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <button
                     type="button"
@@ -830,7 +830,7 @@ export function PollWorkspace({
                 ref={gridRef}
                 className={`${
                   mobileViewMode === "1day" ? "hidden md:block" : "block"
-                } relative select-none overflow-hidden rounded-md border border-[#E2E0D8] bg-white`}
+                } relative select-none overflow-hidden rounded-xl border border-[#E2E0D8] bg-white`}
               >
                 {/* Header Row */}
                 <div
@@ -1107,7 +1107,7 @@ export function PollWorkspace({
 
               {/* Flat Bottom Resolution Bar */}
               {activeRankedWindow && (
-                <div className="mt-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 rounded-md border border-[#141413] bg-[#141413] px-4 py-3 text-[#F6F5F2]">
+                <div className="mt-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 rounded-xl border border-[#141413] bg-[#141413] px-4 py-3 text-[#F6F5F2]">
                   <div className="flex flex-wrap items-center gap-3 font-mono text-xs tabular-nums">
                     <span className="rounded bg-emerald-500/20 border border-emerald-400/40 px-2 py-0.5 text-[10px] font-semibold uppercase text-emerald-300">
                       Best time
@@ -1152,7 +1152,7 @@ export function PollWorkspace({
             {sidebarOpen && (
               <aside className="w-full lg:w-[320px] shrink-0 space-y-3">
                 {/* Best Times Card */}
-                <div className="rounded-md border border-[#E2E0D8] bg-white p-3.5">
+                <div className="rounded-xl border border-[#E2E0D8] bg-white p-4">
                   <div className="flex items-center justify-between border-b border-[#E2E0D8] pb-2">
                     <span className="font-mono text-xs font-semibold uppercase tracking-wider text-[#141413] flex items-center gap-1.5">
                       <Clock className="h-3.5 w-3.5 text-[#575550]" />
@@ -1246,7 +1246,7 @@ export function PollWorkspace({
                 </div>
 
                 {/* Participants Card */}
-                <div className="rounded-md border border-[#E2E0D8] bg-white p-3.5">
+                <div className="rounded-xl border border-[#E2E0D8] bg-white p-4">
                   <div className="flex items-center justify-between border-b border-[#E2E0D8] pb-2">
                     <span className="font-mono text-xs font-semibold uppercase tracking-wider text-[#141413] flex items-center gap-1.5">
                       <Users className="h-3.5 w-3.5 text-[#575550]" />
