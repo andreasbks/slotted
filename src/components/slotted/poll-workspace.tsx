@@ -34,6 +34,7 @@ import {
   makeSlotKey,
   parseSlotKey,
 } from "@/lib/slotted-data";
+import { calmFailure } from "@/lib/calm-copy";
 import { ArcEaselTicket } from "./arc-easel-ticket";
 import { Avatar } from "./avatar";
 import { TimezoneCombobox } from "./timezone-combobox";
@@ -79,6 +80,7 @@ export function PollWorkspace({
   const [saveState, setSaveState] = useState<
     "idle" | "saving" | "saved" | "error"
   >("idle");
+  const [saveDetail, setSaveDetail] = useState("Not saved. Try again.");
   const [focusedCellKey, setFocusedCellKey] = useState<string | null>(null);
 
   // Mobile states
@@ -228,11 +230,22 @@ export function PollWorkspace({
             slots: nextSlots,
           }),
         });
-        if (!response.ok) throw new Error("save failed");
+        if (!response.ok) {
+          const failure = (await response.json().catch(() => ({}))) as {
+            error?: string;
+          };
+          throw new Error(calmFailure(failure.error, "Not saved. Try again."));
+        }
         const data = await response.json();
         onUpdatePoll(data.poll as PollData);
         setSaveState("saved");
-      } catch {
+      } catch (error) {
+        setSaveDetail(
+          calmFailure(
+            error instanceof Error ? error.message : "",
+            "Not saved. Try again."
+          )
+        );
         setSaveState("error");
       }
     },
@@ -433,24 +446,43 @@ export function PollWorkspace({
           lockedSlotEnd: target.endSlotKey,
         }),
       });
-      if (!response.ok) throw new Error();
+      if (!response.ok) {
+        const failure = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        window.alert(
+          calmFailure(failure.error, "Couldn’t lock the time. Try again.")
+        );
+        return;
+      }
       const data = await response.json();
       onUpdatePoll(data.poll as PollData);
       setMobileDrawerOpen(false);
     } catch {
-      window.alert("Couldn’t lock the time. The poll is still open.");
+      window.alert("Couldn’t lock the time. Try again.");
     }
   };
 
   const handleUnlockPoll = async () => {
-    const response = await fetch(`/api/polls/${poll.slug}/lock`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: "OPEN" }),
-    });
-    if (response.ok) {
+    try {
+      const response = await fetch(`/api/polls/${poll.slug}/lock`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "OPEN" }),
+      });
+      if (!response.ok) {
+        const failure = (await response.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        window.alert(
+          calmFailure(failure.error, "Couldn’t unlock the poll. Try again.")
+        );
+        return;
+      }
       const data = await response.json();
       onUpdatePoll(data.poll as PollData);
+    } catch {
+      window.alert("Couldn’t unlock the poll. Try again.");
     }
   };
 
@@ -497,14 +529,19 @@ export function PollWorkspace({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: passwordAttempt }),
       });
-      const data = await res.json();
+      const data = (await res.json().catch(() => ({}))) as {
+        valid?: boolean;
+        error?: string;
+      };
       if (res.ok && data.valid) {
         await onReloadPoll();
       } else {
-        setPasswordError(data.error || "Incorrect password");
+        setPasswordError(
+          calmFailure(data.error, "Couldn’t check that password. Try again.")
+        );
       }
     } catch {
-      setPasswordError("Verification failed");
+      setPasswordError("Couldn’t check that password. Try again.");
     } finally {
       setVerifyingPassword(false);
     }
@@ -959,7 +996,7 @@ export function PollWorkspace({
                     : saveState === "saved"
                       ? "Saved"
                       : saveState === "error"
-                        ? "Not saved yet"
+                        ? saveDetail
                         : ""}
                 </span>
               </div>

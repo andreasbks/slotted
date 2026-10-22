@@ -12,17 +12,26 @@ import {
   listPollsForViewer,
 } from "@/lib/store-server";
 import { getClerkIdentityHash } from "@/lib/optional-auth-server";
+import { blockedBySetup, respondToFailure } from "@/lib/request-failure";
 
 export async function GET() {
-  const deviceToken = await readDeviceToken();
-  const identityHash = await getClerkIdentityHash();
-  const polls = await listPollsForViewer(
-    identityHash || (deviceToken ? hashSecret(deviceToken) : undefined)
-  );
-  return NextResponse.json({ polls });
+  const blocked = blockedBySetup("host");
+  if (blocked) return blocked;
+  try {
+    const deviceToken = await readDeviceToken();
+    const identityHash = await getClerkIdentityHash();
+    const polls = await listPollsForViewer(
+      identityHash || (deviceToken ? hashSecret(deviceToken) : undefined)
+    );
+    return NextResponse.json({ polls });
+  } catch (error) {
+    return respondToFailure(error, "Couldn’t load your polls. Try again.", "host");
+  }
 }
 
 export async function POST(request: Request) {
+  const blocked = blockedBySetup("host");
+  if (blocked) return blocked;
   try {
     assertSameOrigin(request);
     const body = await request.json();
@@ -75,10 +84,7 @@ export async function POST(request: Request) {
       maxAge: 400 * 24 * 60 * 60,
     });
     return response;
-  } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed to create poll" },
-      { status: 400 }
-    );
+  } catch (error) {
+    return respondToFailure(error, "Couldn’t create the poll. Try again.", "host");
   }
 }

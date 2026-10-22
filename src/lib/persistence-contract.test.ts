@@ -4,9 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
+import { calmFailure } from "./calm-copy.ts";
 import { readDatabaseUrl } from "./database-url.ts";
 import { advanceRateLimit } from "./rate-limit.ts";
-import { resolveStoreKind } from "./store-mode.ts";
+import { readSetupVariable, resolveStoreKind, setupCopy } from "./store-mode.ts";
 import { resolveTokenPepper } from "./token-pepper.ts";
 import {
   generateRecurringDates,
@@ -85,6 +86,58 @@ test("deployed token pepper is required and local development has a fallback", (
     configured
   );
   assert.equal(typeof resolveTokenPepper({ NODE_ENV: "development" }), "string");
+});
+
+test("deployed setup names one missing variable and leaked errors stay off the page", () => {
+  assert.equal(readSetupVariable({ NODE_ENV: "production" }), "DATABASE_URL");
+  assert.equal(
+    readSetupVariable({
+      NODE_ENV: "production",
+      VERCEL: "1",
+      DATABASE_URL: "postgresql://example.invalid/slotted",
+    }),
+    "SLOTTED_TOKEN_PEPPER"
+  );
+  assert.equal(
+    readSetupVariable({
+      NODE_ENV: "production",
+      DATABASE_URL: "postgresql://example.invalid/slotted",
+      SLOTTED_TOKEN_PEPPER: "too-short",
+    }),
+    "SLOTTED_TOKEN_PEPPER"
+  );
+  assert.equal(
+    readSetupVariable({
+      NODE_ENV: "development",
+      VERCEL: "1",
+      DATABASE_URL: "postgresql://example.invalid/slotted",
+    }),
+    "SLOTTED_TOKEN_PEPPER"
+  );
+  assert.equal(
+    readSetupVariable({
+      NODE_ENV: "production",
+      DATABASE_URL: "postgresql://example.invalid/slotted",
+      SLOTTED_TOKEN_PEPPER: "a".repeat(32),
+    }),
+    null
+  );
+  assert.equal(readSetupVariable({ NODE_ENV: "development" }), null);
+  const pepper = setupCopy("SLOTTED_TOKEN_PEPPER");
+  assert.match(pepper.sentence, /SLOTTED_TOKEN_PEPPER/);
+  assert.match(pepper.step, /Vercel/);
+  assert.doesNotMatch(pepper.sentence, /required in deployed/);
+  assert.equal(
+    calmFailure(
+      "SLOTTED_TOKEN_PEPPER is required in deployed environments",
+      "Couldn’t create the poll. Try again."
+    ),
+    "Couldn’t create the poll. Try again."
+  );
+  assert.equal(
+    calmFailure("This poll is locked.", "Couldn’t save that. Try again."),
+    "This poll is locked."
+  );
 });
 
 test("durable rate limit allows the limit and then blocks inside the window", () => {

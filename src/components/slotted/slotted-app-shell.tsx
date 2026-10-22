@@ -40,11 +40,13 @@ import {
   generateRecurringDates,
   isValidTimezone,
 } from "@/lib/slotted-data";
+import { calmFailure, setupLine } from "@/lib/calm-copy";
 import { PollWorkspace } from "./poll-workspace";
 import { IdentityMenu } from "./identity-menu";
 import { CalendarPicker } from "./calendar-picker";
 import { TimezoneCombobox } from "./timezone-combobox";
 import { DurationControls } from "./duration-controls";
+import { FailureScreen, NotReadyScreen, SetupScreen } from "./status-screens";
 
 function localTodayIso(): string {
   const today = new Date();
@@ -83,8 +85,13 @@ export function SlottedAppShell({
 
   const [polls, setPolls] = useState<PollData[]>([]);
   const [pollLoadState, setPollLoadState] = useState<
-    "loading" | "ready" | "not-found" | "error"
+    "loading" | "ready" | "not-found" | "not-ready" | "error"
   >(initialViewMode === "poll" ? "loading" : "ready");
+  const [reloadKey, setReloadKey] = useState(0);
+  const [setupNotice, setSetupNotice] = useState<{
+    sentence: string;
+    step: string;
+  } | null>(null);
 
   const [activeSlug, setActiveSlug] = useState<string>(
     initialSlug || INITIAL_POLLS[0].slug
@@ -147,22 +154,38 @@ export function SlottedAppShell({
             ? `/api/polls/${encodeURIComponent(initialSlug)}`
             : "/api/polls";
         const res = await fetch(endpoint, { cache: "no-store" });
+        const data = (await res.json().catch(() => ({}))) as {
+          poll?: PollData;
+          polls?: PollData[];
+          code?: string;
+          error?: string;
+          step?: string;
+        };
+        if (cancelled) return;
+        if (data.code === "not_ready" || (data.code === "setup" && initialViewMode === "poll")) {
+          setPollLoadState("not-ready");
+          return;
+        }
+        if (data.code === "setup") {
+          setSetupNotice({
+            sentence: setupLine(data.error, "Set the missing value to open Slotted."),
+            step: setupLine(data.step, "Add it in Vercel, then reload."),
+          });
+          return;
+        }
         if (res.status === 404) {
-          if (!cancelled) setPollLoadState("not-found");
+          setPollLoadState("not-found");
           return;
         }
         if (res.ok) {
-          const data = await res.json();
-          if (!cancelled) {
-            const list: PollData[] = data.poll
-              ? [data.poll as PollData]
-              : Array.isArray(data.polls)
-                ? data.polls
-                : [];
-            setPolls(list);
-            setPollLoadState("ready");
-          }
-        } else if (!cancelled) {
+          const list: PollData[] = data.poll
+            ? [data.poll]
+            : Array.isArray(data.polls)
+              ? data.polls
+              : [];
+          setPolls(list);
+          setPollLoadState("ready");
+        } else {
           setPollLoadState("error");
         }
       } catch {
@@ -186,7 +209,7 @@ export function SlottedAppShell({
     return () => {
       cancelled = true;
     };
-  }, [initialSlug, initialViewMode]);
+  }, [initialSlug, initialViewMode, reloadKey]);
 
   const handleSwitchPollMode = (nextMode: PollMode) => {
     setPollMode(nextMode);
@@ -331,10 +354,22 @@ export function SlottedAppShell({
         }, 550);
         return;
       }
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
-      setCreateError(data.error || "Couldn’t create the poll.");
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        step?: string;
+        code?: string;
+      };
+      if (data.code === "setup") {
+        setSetupNotice({
+          sentence: setupLine(data.error, "Set the missing value to open Slotted."),
+          step: setupLine(data.step, "Add it in Vercel, then reload."),
+        });
+        setCreatingState("idle");
+        return;
+      }
+      setCreateError(calmFailure(data.error, "Couldn’t create the poll. Try again."));
     } catch {
-      setCreateError("Couldn’t create the poll.");
+      setCreateError("Couldn’t create the poll. Try again.");
     }
 
     setCreatingState("idle");
@@ -358,19 +393,38 @@ export function SlottedAppShell({
 
   const reloadActivePoll = async () => {
     if (!activeSlug) return;
-    const response = await fetch(`/api/polls/${encodeURIComponent(activeSlug)}`, {
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error("Couldn’t load this poll");
-    const data = await response.json();
-    setPolls([data.poll as PollData]);
-    setPollLoadState("ready");
+    try {
+      const response = await fetch(`/api/polls/${encodeURIComponent(activeSlug)}`, {
+        cache: "no-store",
+      });
+      const data = (await response.json().catch(() => ({}))) as {
+        poll?: PollData;
+        code?: string;
+      };
+      if (data.code === "not_ready" || data.code === "setup") {
+        setPollLoadState("not-ready");
+        return;
+      }
+      if (!response.ok || !data.poll) {
+        setPollLoadState("error");
+        return;
+      }
+      setPolls([data.poll]);
+      setPollLoadState("ready");
+    } catch {
+      setPollLoadState("error");
+    }
   };
 
   /* =========================================================
      POLL VIEW (/p/[slug]) — Matching Rounded-[24px] Design System
      ========================================================= */
+  if (setupNotice && viewMode === "landing") {
+    return <SetupScreen sentence={setupNotice.sentence} step={setupNotice.step} />;
+  }
+
   if (viewMode === "poll") {
+    if (pollLoadState === "not-ready") return <NotReadyScreen />;
     if (pollLoadState === "loading") {
       return (
         <main
@@ -387,18 +441,13 @@ export function SlottedAppShell({
     }
     if (pollLoadState === "error") {
       return (
-        <main className="grid min-h-dvh place-items-center bg-[#F6F5F2] px-4">
-          <div className="max-w-md text-center">
-            <h1 className="text-2xl font-semibold">Couldn’t load this poll</h1>
-            <button
-              type="button"
-              onClick={() => void reloadActivePoll()}
-              className="mt-6 min-h-11 rounded-lg bg-[#171715] px-5 text-sm font-semibold text-white"
-            >
-              Try again
-            </button>
-          </div>
-        </main>
+        <FailureScreen
+          title="Couldn’t load this poll."
+          onRetry={() => {
+            setPollLoadState("loading");
+            setReloadKey((key) => key + 1);
+          }}
+        />
       );
     }
     if (pollLoadState === "not-found" || !activePoll) {
@@ -517,7 +566,7 @@ export function SlottedAppShell({
         />
 
         {/* Minimal Top Header on the Artwork */}
-        <header className="relative z-10 mx-auto flex h-16 w-full max-w-6xl items-center justify-between px-5 sm:px-8">
+        <header className="relative z-10 mx-auto flex h-16 w-full min-w-0 max-w-6xl items-center justify-between gap-2 px-4 sm:px-8">
           <Link
             href="/"
             className="flex items-center gap-2.5 font-mono text-sm font-semibold tracking-tight text-[#FAF9F6]"
@@ -531,7 +580,7 @@ export function SlottedAppShell({
             <span>slotted</span>
           </Link>
 
-          <div className="flex items-center gap-2 font-mono text-xs">
+          <div className="flex min-w-0 items-center justify-end gap-1.5 font-mono text-xs sm:gap-2">
             <a
               href="#my-polls"
               className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-black/35 px-3.5 py-1.5 text-xs font-medium text-[#FAF9F6] hover:bg-black/50 transition"
@@ -548,6 +597,7 @@ export function SlottedAppShell({
               referenceDateIso={selectedDates[0] || todayIso}
               ariaLabel="Your timezone"
               variant="dark"
+              className="min-w-0"
             />
             <IdentityMenu name={guestName} />
           </div>
@@ -560,7 +610,7 @@ export function SlottedAppShell({
               onSubmit={handleCreatePoll}
               className="overflow-hidden rounded-[24px] border border-[#E4E2DA]/95 bg-[#FAF9F6] shadow-[0_28px_70px_-15px_rgba(0,0,0,0.6)]"
             >
-              <div className="p-5 sm:p-6 space-y-5 select-none">
+              <div className="min-w-0 space-y-5 p-5 sm:p-6">
                 {/* 1. Poll Name Input */}
                 <div>
                   <input
@@ -575,41 +625,40 @@ export function SlottedAppShell({
                 </div>
 
                 {/* 2. Event Scale / Granularity Mode Switcher + Quick Templates */}
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  {/* Dates + Hours vs Full Days Toggle */}
-                  <div className="inline-flex items-center rounded-xl border border-[#E4E2DA] bg-white p-1 font-mono text-xs">
+                <div className="grid gap-2">
+                  <div className="grid grid-cols-2 rounded-xl border border-[#E4E2DA] bg-white p-1 font-mono text-xs">
                     <button
                       type="button"
                       onClick={() => handleSwitchPollMode("dates_and_hours")}
-                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition cursor-pointer ${
+                      className={`inline-flex min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 whitespace-nowrap transition cursor-pointer ${
                         pollMode === "dates_and_hours"
                           ? "bg-[#141413] text-[#F6F5F2] font-semibold"
                           : "text-[#575550] hover:text-[#141413]"
                       }`}
                     >
-                      <Clock className="h-3 w-3" />
+                      <Clock className="h-3 w-3 shrink-0" />
                       <span>Dates + hours</span>
                     </button>
                     <button
                       type="button"
                       onClick={() => handleSwitchPollMode("full_days")}
-                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition cursor-pointer ${
+                      className={`inline-flex min-w-0 items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 whitespace-nowrap transition cursor-pointer ${
                         pollMode === "full_days"
                           ? "bg-[#141413] text-[#F6F5F2] font-semibold"
                           : "text-[#575550] hover:text-[#141413]"
                       }`}
                     >
-                      <Calendar className="h-3 w-3" />
+                      <Calendar className="h-3 w-3 shrink-0" />
                       <span>Full days</span>
                     </button>
                   </div>
 
-                  <div className="inline-flex items-center rounded-xl border border-[#E4E2DA] bg-white p-1 font-mono text-xs">
+                  <div className="grid grid-cols-2 rounded-xl border border-[#E4E2DA] bg-white p-1 font-mono text-xs">
                     <button
                       type="button"
                       onClick={() => setScheduleType("specific_dates")}
                       aria-pressed={scheduleType === "specific_dates"}
-                      className={`cursor-pointer rounded-lg px-3 py-1.5 transition ${
+                      className={`cursor-pointer whitespace-nowrap rounded-lg px-2 py-1.5 transition ${
                         scheduleType === "specific_dates"
                           ? "bg-[#141413] font-semibold text-[#F6F5F2]"
                           : "text-[#575550] hover:text-[#141413]"
@@ -621,7 +670,7 @@ export function SlottedAppShell({
                       type="button"
                       onClick={() => setScheduleType("days_of_week")}
                       aria-pressed={scheduleType === "days_of_week"}
-                      className={`cursor-pointer rounded-lg px-3 py-1.5 transition ${
+                      className={`cursor-pointer whitespace-nowrap rounded-lg px-2 py-1.5 transition ${
                         scheduleType === "days_of_week"
                           ? "bg-[#141413] font-semibold text-[#F6F5F2]"
                           : "text-[#575550] hover:text-[#141413]"
@@ -641,7 +690,7 @@ export function SlottedAppShell({
                   />
                 ) : (
                   <div className="space-y-3 rounded-2xl border border-[#E4E2DA] bg-white p-3 sm:p-3.5">
-                    <div className="flex flex-wrap gap-1">
+                    <div className="grid grid-cols-7 gap-1">
                       {WEEKDAY_LABELS.map((weekday) => {
                         const selected = weekdays.includes(weekday.day);
                         return (
@@ -656,7 +705,7 @@ export function SlottedAppShell({
                                   : [...current, weekday.day]
                               )
                             }
-                            className={`cursor-pointer rounded-lg border px-2.5 py-1.5 font-mono text-xs transition ${
+                            className={`cursor-pointer rounded-lg border px-0 py-1.5 text-center font-mono text-[11px] transition sm:text-xs ${
                               selected
                                 ? "border-[#141413] bg-[#141413] font-semibold text-[#F6F5F2]"
                                 : "border-[#E4E2DA] bg-[#FAF9F6] text-[#575550] hover:border-[#141413]"
@@ -667,7 +716,7 @@ export function SlottedAppShell({
                         );
                       })}
                     </div>
-                    <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
+                    <div className="grid grid-cols-2 gap-2 font-mono text-xs">
                       <button
                         type="button"
                         onClick={() => setSpanMode("weeks")}
@@ -690,7 +739,7 @@ export function SlottedAppShell({
                       >
                         Until a date
                       </button>
-                      <label className="inline-flex items-center gap-1.5 text-[#575550]">
+                      <label className="col-span-2 grid min-w-0 gap-1 text-[#575550] sm:col-span-1">
                         Starting
                         <input
                           type="date"
@@ -698,11 +747,12 @@ export function SlottedAppShell({
                           min={todayIso}
                           value={rangeStart}
                           onChange={(event) => setRangeStart(event.target.value)}
-                          className="rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2 py-1 text-[#141413]"
+                          className="w-full min-w-0 rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2 py-1 text-[#141413]"
                         />
                       </label>
                       {spanMode === "weeks" ? (
-                        <label className="inline-flex items-center gap-1.5 text-[#575550]">
+                        <label className="col-span-2 grid min-w-0 gap-1 text-[#575550] sm:col-span-1">
+                          Weeks
                           <input
                             type="number"
                             min={1}
@@ -714,12 +764,11 @@ export function SlottedAppShell({
                                 Math.min(26, Math.max(1, Number(event.target.value) || 1))
                               )
                             }
-                            className="w-16 rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2 py-1 text-[#141413]"
+                            className="w-full min-w-0 rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2 py-1 text-[#141413]"
                           />
-                          weeks
                         </label>
                       ) : (
-                        <label className="inline-flex items-center gap-1.5 text-[#575550]">
+                        <label className="col-span-2 grid min-w-0 gap-1 text-[#575550] sm:col-span-1">
                           Until
                           <input
                             type="date"
@@ -727,7 +776,7 @@ export function SlottedAppShell({
                             min={rangeStart || todayIso}
                             value={rangeEnd}
                             onChange={(event) => setRangeEnd(event.target.value)}
-                            className="rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2 py-1 text-[#141413]"
+                            className="w-full min-w-0 rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2 py-1 text-[#141413]"
                           />
                         </label>
                       )}
@@ -740,14 +789,14 @@ export function SlottedAppShell({
 
                 {/* 4. Candidate Hours Window (Only shown in "Dates + hours" mode) */}
                 {pollMode === "dates_and_hours" && (
-                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[#E4E2DA] bg-white px-3.5 py-2.5 font-mono text-xs">
+                  <div className="grid grid-cols-1 items-center gap-2 rounded-xl border border-[#E4E2DA] bg-white px-3.5 py-2.5 font-mono text-xs sm:grid-cols-[auto_minmax(0,1fr)]">
                     <span className="text-[#575550]">Candidate hours</span>
-                    <div className="flex items-center gap-2">
+                    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
                       <select
                         aria-label="Start hour"
                         value={startHour}
                         onChange={(e) => setStartHour(Number(e.target.value))}
-                        className="rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2.5 py-1 font-medium text-[#141413] tabular-nums focus:outline-none cursor-pointer"
+                        className="w-full min-w-0 rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2.5 py-1 font-medium text-[#141413] tabular-nums focus:outline-none cursor-pointer"
                       >
                         {[7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].map(
                           (h) => (
@@ -766,7 +815,7 @@ export function SlottedAppShell({
                         aria-label="End hour"
                         value={endHour}
                         onChange={(e) => setEndHour(Number(e.target.value))}
-                        className="rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2.5 py-1 font-medium text-[#141413] tabular-nums focus:outline-none cursor-pointer"
+                        className="w-full min-w-0 rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2.5 py-1 font-medium text-[#141413] tabular-nums focus:outline-none cursor-pointer"
                       >
                         {[12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23].map(
                           (h) => (
@@ -808,7 +857,7 @@ export function SlottedAppShell({
                         </div>
 
                         {/* Access & Password Protection + Response Visibility */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                        <div className="grid grid-cols-1 items-start gap-3 pt-1 sm:grid-cols-2">
                           <div>
                             <label className="block text-[10px] uppercase tracking-wider text-[#8A8780] mb-1.5">
                               Access control
@@ -879,7 +928,7 @@ export function SlottedAppShell({
                         </div>
 
                         {/* Allow "If needed" & Timezone */}
-                        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[#E4E2DA] pt-3">
+                        <div className="flex flex-col gap-3 border-t border-[#E4E2DA] pt-3 sm:flex-row sm:items-center sm:justify-between">
                           <label className="inline-flex items-center gap-2 cursor-pointer">
                             <input
                               type="checkbox"
@@ -900,6 +949,7 @@ export function SlottedAppShell({
                             referenceDateIso={selectedDates[0] || todayIso}
                             ariaLabel="Poll timezone"
                             align="right"
+                            className="max-w-full sm:max-w-none"
                           />
                         </div>
                       </div>
@@ -914,11 +964,11 @@ export function SlottedAppShell({
               ) : null}
 
               {/* Bottom Action Bar Inside the Creation Card */}
-              <div className="flex items-center justify-between border-t border-[#E4E2DA] bg-[#F2F0E9] px-5 py-3.5">
+              <div className="flex flex-col gap-2 border-t border-[#E4E2DA] bg-[#F2F0E9] px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between">
                 <button
                   type="button"
                   onClick={() => setAdvancedOpen((prev) => !prev)}
-                  className={`inline-flex items-center gap-1.5 rounded-xl border px-3.5 py-2 font-mono text-xs font-medium transition cursor-pointer ${
+                  className={`inline-flex min-w-0 items-center justify-center gap-1.5 rounded-xl border px-3.5 py-2 font-mono text-xs font-medium transition cursor-pointer sm:justify-start ${
                     advancedOpen
                       ? "border-[#141413] bg-[#141413] text-[#F6F5F2]"
                       : "border-[#D8D5CB] bg-white text-[#141413] hover:bg-[#FAF9F6]"
@@ -939,7 +989,7 @@ export function SlottedAppShell({
                 <button
                   type="submit"
                   disabled={creatingState !== "idle"}
-                  className={`inline-flex items-center gap-2 rounded-xl px-5 py-2.5 font-mono text-xs font-semibold transition cursor-pointer ${
+                  className={`inline-flex min-w-0 items-center justify-center gap-2 rounded-xl px-5 py-2.5 font-mono text-xs font-semibold transition cursor-pointer ${
                     creatingState === "copied"
                       ? "bg-emerald-600 text-white"
                       : "bg-[#141413] text-[#F6F5F2] hover:bg-emerald-700"
@@ -948,7 +998,7 @@ export function SlottedAppShell({
                   {creatingState === "copied" ? (
                     <>
                       <Check className="h-3.5 w-3.5" />
-                      <span>Link copied — opening {createdSlugPreview}</span>
+                      <span className="truncate">Link copied — opening {createdSlugPreview}</span>
                     </>
                   ) : creatingState === "creating" ? (
                     <span>Creating...</span>
@@ -991,7 +1041,21 @@ export function SlottedAppShell({
           </div>
 
           <div className="space-y-3">
-            {polls.map((p) => {
+            {pollLoadState === "error" ? (
+              <div className="rounded-[24px] border border-[#E4E2DA] bg-white p-5">
+                <p className="text-sm text-[#141413]">Couldn’t load your polls.</p>
+                <button
+                  type="button"
+                  onClick={() => setReloadKey((key) => key + 1)}
+                  className="mt-4 inline-flex min-h-11 items-center rounded-lg bg-[#171715] px-5 text-sm font-semibold text-white"
+                >
+                  Try again
+                </button>
+              </div>
+            ) : null}
+            {pollLoadState === "error"
+              ? null
+              : polls.map((p) => {
               const topWin = computeRankedWindows(p)[0];
               const topDateHdr = topWin ? formatDateHeader(topWin.date) : null;
               const topStartDisp = topWin

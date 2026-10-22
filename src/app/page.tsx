@@ -1,24 +1,21 @@
-"use client";
-
 import { Suspense } from "react";
-import { useSearchParams } from "next/navigation";
-import { SlottedAppShell } from "@/components/slotted/slotted-app-shell";
+import { io } from "next/cache";
+import { HomeClient } from "./home-client";
+import { readSetupVariable, setupCopy } from "@/lib/setup-status";
+import { OpeningScreen, SetupScreen } from "@/components/slotted/status-screens";
 
-function HomeContent() {
-  const searchParams = useSearchParams();
-  const initialAdvanced = searchParams?.get("advanced") === "1";
-  return (
-    <SlottedAppShell
-      initialViewMode="landing"
-      initialAdvancedOpen={initialAdvanced}
-    />
-  );
+async function HomeBody() {
+  await io();
+  const variable = readSetupVariable();
+  if (!variable) return <HomeClient />;
+  const copy = setupCopy(variable);
+  return <SetupScreen sentence={copy.sentence} step={copy.step} />;
 }
 
 export default function HomePage() {
   return (
-    <Suspense fallback={null}>
-      <HomeContent />
+    <Suspense fallback={<OpeningScreen />}>
+      <HomeBody />
     </Suspense>
   );
 }

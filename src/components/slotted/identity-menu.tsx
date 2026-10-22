@@ -3,6 +3,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { KeyRound, UserRound } from "lucide-react";
 import Link from "next/link";
+import { calmFailure } from "@/lib/calm-copy";
 import { Avatar } from "./avatar";
 
 export function IdentityMenu({ name }: { name: string }) {
@@ -21,12 +22,17 @@ export function IdentityMenu({ name }: { name: string }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "issue" }),
     });
-    const data = await response.json();
-    if (response.ok) {
+    const data = (await response.json().catch(() => ({}))) as {
+      key?: string;
+      error?: string;
+    };
+    if (response.ok && data.key) {
       setRecoveryKey(data.key);
       setStatus("Save this key somewhere private.");
     } else {
-      setStatus(data.error || "Couldn’t create a recovery key.");
+      setStatus(
+        calmFailure(data.error, "Couldn’t create a recovery key. Try again.")
+      );
     }
   };
 
@@ -38,13 +44,16 @@ export function IdentityMenu({ name }: { name: string }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "redeem", key }),
     });
-    const data = await response.json();
+    const data = (await response.json().catch(() => ({}))) as {
+      replacementKey?: string;
+      error?: string;
+    };
     if (response.ok) {
-      setRecoveryKey(data.replacementKey);
+      setRecoveryKey(data.replacementKey ?? null);
       setStatus("Access restored. Save the replacement key now.");
       window.location.reload();
     } else {
-      setStatus(data.error || "Recovery failed.");
+      setStatus(calmFailure(data.error, "Couldn’t restore access. Try again."));
     }
   };
 

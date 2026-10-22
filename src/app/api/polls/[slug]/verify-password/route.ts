@@ -14,11 +14,14 @@ import {
   PASSWORD_ATTEMPT_LIMIT,
   PASSWORD_WINDOW_MS,
 } from "@/lib/rate-limit";
+import { blockedBySetup, respondToFailure } from "@/lib/request-failure";
 
 export async function POST(
   request: Request,
   context: { params: Promise<{ slug: string }> }
 ) {
+  const blocked = blockedBySetup("guest");
+  if (blocked) return blocked;
   try {
     assertSameOrigin(request);
     const { slug } = await context.params;
@@ -54,10 +57,11 @@ export async function POST(
       expires: grant.expiresAt,
     });
     return response;
-  } catch {
-    return NextResponse.json(
-      { valid: false, error: "Verification failed" },
-      { status: 400 }
+  } catch (error) {
+    return respondToFailure(
+      error,
+      "Couldn’t check that password. Try again.",
+      "guest"
     );
   }
 }

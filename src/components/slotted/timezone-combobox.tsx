@@ -3,11 +3,13 @@
 import React, {
   useState,
   useEffect,
+  useLayoutEffect,
   useRef,
   useMemo,
   useId,
   useCallback,
 } from "react";
+import { createPortal } from "react-dom";
 import { Check, ChevronDown, Globe, Search, X } from "lucide-react";
 import {
   getBrowserTimezone,
@@ -22,6 +24,14 @@ interface TimezoneComboboxProps {
   ariaLabel?: string;
   variant?: "light" | "dark" | "compact";
   align?: "left" | "right";
+  className?: string;
+}
+
+interface PanelPlacement {
+  left: number;
+  width: number;
+  maxHeight: number;
+  top: number;
 }
 
 export function TimezoneCombobox({
@@ -31,15 +41,18 @@ export function TimezoneCombobox({
   ariaLabel = "Select timezone",
   variant = "light",
   align = "right",
+  className = "",
 }: TimezoneComboboxProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
+  const [placement, setPlacement] = useState<PanelPlacement | null>(null);
   const [browserTz] = useState<string>(() => getBrowserTimezone());
 
   const listboxId = useId();
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -55,6 +68,7 @@ export function TimezoneCombobox({
 
   const closePopover = useCallback((returnFocus = false) => {
     setOpen(false);
+    setPlacement(null);
     setQuery("");
     if (returnFocus) {
       requestAnimationFrame(() => {
@@ -63,21 +77,88 @@ export function TimezoneCombobox({
     }
   }, []);
 
+  const measure = useCallback((): PanelPlacement | null => {
+    const trigger = triggerRef.current;
+    if (!trigger) return null;
+    const rect = trigger.getBoundingClientRect();
+    const margin = 8;
+    const gap = 6;
+    const width = Math.min(360, window.innerWidth - margin * 2);
+    const maxPanel = Math.min(320, window.innerHeight - margin * 2);
+    const above = rect.top - gap - margin;
+    let top = rect.bottom + gap;
+    let height = Math.min(maxPanel, window.innerHeight - margin - top);
+    if (height < 180 && above > height) {
+      height = Math.min(maxPanel, above);
+      top = rect.top - gap - height;
+    }
+    top = Math.max(margin, Math.floor(top));
+    height = Math.min(height, window.innerHeight - margin - top);
+    height = Math.max(0, Math.floor(height));
+    const preferredLeft = align === "right" ? rect.right - width : rect.left;
+    const left = Math.min(
+      Math.max(margin, preferredLeft),
+      Math.max(margin, window.innerWidth - width - margin)
+    );
+    return { left: Math.floor(left), width, maxHeight: height, top };
+  }, [align]);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      nudgedTrigger.current = false;
+      return;
+    }
+    let frame = 0;
+    const tick = () => {
+      const trigger = triggerRef.current;
+      if (trigger && !nudgedTrigger.current) {
+        const rect = trigger.getBoundingClientRect();
+        if (rect.top < 8 || rect.bottom > window.innerHeight - 16) {
+          trigger.scrollIntoView({ block: "center", inline: "nearest" });
+        }
+        nudgedTrigger.current = true;
+      }
+      const next = measure();
+      setPlacement((current) => {
+        if (!next) return current;
+        if (
+          current &&
+          current.left === next.left &&
+          current.width === next.width &&
+          current.maxHeight === next.maxHeight &&
+          current.top === next.top
+        ) {
+          return current;
+        }
+        return next;
+      });
+      frame = window.requestAnimationFrame(tick);
+    };
+    frame = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, measure]);
+
+  const didFocusPanel = useRef(false);
+  const nudgedTrigger = useRef(false);
   useEffect(() => {
-    if (!open) return;
-    requestAnimationFrame(() => {
-      inputRef.current?.focus();
-    });
-  }, [open]);
+    if (!open) {
+      didFocusPanel.current = false;
+      return;
+    }
+    if (!placement || didFocusPanel.current) return;
+    inputRef.current?.focus();
+    didFocusPanel.current = true;
+  }, [open, placement]);
 
   useEffect(() => {
     if (!open) return;
 
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
-      if (target && !containerRef.current?.contains(target)) {
-        closePopover(false);
-      }
+      if (!target) return;
+      if (containerRef.current?.contains(target)) return;
+      if (panelRef.current?.contains(target)) return;
+      closePopover(false);
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -134,35 +215,30 @@ export function TimezoneCombobox({
 
   useEffect(() => {
     if (!open) return;
-    const activeEl = listRef.current?.querySelector<HTMLElement>(
+    const list = listRef.current;
+    const activeEl = list?.querySelector<HTMLElement>(
       `[data-tz-index="${activeIndex}"]`
     );
-    activeEl?.scrollIntoView({ block: "nearest" });
-  }, [activeIndex, open]);
+    if (!list || !activeEl) return;
+    const top = activeEl.offsetTop;
+    const bottom = top + activeEl.offsetHeight;
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight) {
+      list.scrollTop = bottom - list.clientHeight;
+    }
+  }, [activeIndex, open, placement]);
 
   const triggerClassName =
     variant === "dark"
-      ? "inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-black/35 px-3 py-1.5 font-mono text-xs text-[#FAF9F6] tabular-nums hover:bg-black/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white transition cursor-pointer"
+      ? "inline-flex max-w-full items-center gap-1.5 rounded-full border border-white/20 bg-black/35 px-3 py-1.5 font-mono text-xs text-[#FAF9F6] tabular-nums hover:bg-black/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white transition cursor-pointer"
       : variant === "compact"
-        ? "inline-flex items-center gap-1.5 rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2.5 py-1 font-mono text-[11px] font-medium text-[#141413] tabular-nums hover:border-[#141413] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#141413] transition cursor-pointer"
-        : "inline-flex items-center gap-1.5 rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] px-3 py-2 font-mono text-xs font-medium text-[#141413] tabular-nums hover:border-[#141413] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#141413] transition cursor-pointer";
+        ? "inline-flex max-w-full items-center gap-1.5 rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2.5 py-1 font-mono text-[11px] font-medium text-[#141413] tabular-nums hover:border-[#141413] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#141413] transition cursor-pointer"
+        : "inline-flex max-w-full items-center gap-1.5 rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] px-3 py-2 font-mono text-xs font-medium text-[#141413] tabular-nums hover:border-[#141413] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#141413] transition cursor-pointer";
 
   const activeOption = options[activeIndex];
 
   return (
-    <div
-      ref={containerRef}
-      className="relative inline-block text-left"
-      onBlur={(e) => {
-        if (
-          open &&
-          e.relatedTarget &&
-          !e.currentTarget.contains(e.relatedTarget as Node)
-        ) {
-          closePopover(false);
-        }
-      }}
-    >
+    <div ref={containerRef} className={`relative inline-flex min-w-0 max-w-full text-left ${className}`}>
       <button
         ref={triggerRef}
         type="button"
@@ -175,6 +251,10 @@ export function TimezoneCombobox({
             const next = !prev;
             if (next) {
               setActiveIndex(0);
+              triggerRef.current?.scrollIntoView({ block: "nearest" });
+              setPlacement(measure());
+            } else {
+              setPlacement(null);
             }
             return next;
           });
@@ -186,7 +266,7 @@ export function TimezoneCombobox({
             variant === "dark" ? "text-white/75" : "text-[#575550]"
           }`}
         />
-        <span className="truncate max-w-[165px] sm:max-w-[210px]">
+        <span className="max-w-[6.5rem] truncate sm:max-w-[210px]">
           {selectedInfo.city} ({selectedInfo.shortCode} ·{" "}
           {selectedInfo.utcLabel})
         </span>
@@ -197,11 +277,21 @@ export function TimezoneCombobox({
         />
       </button>
 
-      {open ? (
+      {open && placement
+        ? createPortal(
         <div
-          className={`absolute z-50 mt-1.5 w-80 max-w-[calc(100vw-2rem)] rounded-2xl border border-[#E4E2DA] bg-white p-2.5 text-[#141413] shadow-[0_20px_50px_rgba(20,20,19,0.22)] ${
-            align === "right" ? "right-0" : "left-0"
-          }`}
+          ref={panelRef}
+          data-timezone-panel
+          style={{
+            position: "fixed",
+            left: placement.left,
+            width: placement.width,
+            height: placement.maxHeight,
+            maxHeight: placement.maxHeight,
+            top: placement.top,
+            zIndex: 80,
+          }}
+          className="flex flex-col overflow-hidden rounded-2xl border border-[#E4E2DA] bg-white p-2.5 text-[#141413] shadow-[0_20px_50px_rgba(20,20,19,0.22)]"
         >
           <div className="relative flex items-center">
             <Search className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-[#8A8780]" />
@@ -247,9 +337,9 @@ export function TimezoneCombobox({
             <button
               type="button"
               onClick={() => handleSelect(browserTz)}
-              className="mt-1.5 flex w-full items-center justify-between rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] px-2.5 py-1.5 text-left font-mono text-[11px] text-[#141413] hover:border-[#141413] cursor-pointer"
+              className="mt-1.5 flex w-full min-w-0 items-center justify-between gap-2 overflow-hidden rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] px-2.5 py-1.5 text-left font-mono text-[11px] text-[#141413] hover:border-[#141413] cursor-pointer"
             >
-              <span>
+              <span className="min-w-0 truncate">
                 Use current zone ({getTimezoneInfo(browserTz, referenceDateIso).city})
               </span>
               <span className="text-[#575550] tabular-nums">
@@ -263,7 +353,7 @@ export function TimezoneCombobox({
             id={listboxId}
             role="listbox"
             aria-label="Matching timezones"
-            className="mt-1.5 max-h-60 overflow-y-auto divide-y divide-[#F2F0E9]"
+            className="mt-1.5 min-h-0 flex-1 overflow-y-auto overscroll-contain divide-y divide-[#F2F0E9]"
           >
             {options.length === 0 ? (
               <div className="px-3 py-4 text-center font-mono text-xs text-[#8A8780]">
@@ -283,7 +373,7 @@ export function TimezoneCombobox({
                     aria-selected={isSelected}
                     onMouseEnter={() => setActiveIndex(idx)}
                     onClick={() => handleSelect(tz.id)}
-                    className={`flex items-center justify-between gap-2 rounded-xl px-2.5 py-2 font-mono text-xs transition cursor-pointer ${
+                    className={`flex min-w-0 items-center justify-between gap-2 rounded-xl px-2.5 py-2 font-mono text-xs transition cursor-pointer ${
                       isActive
                         ? "bg-[#141413] text-[#F6F5F2]"
                         : isSelected
@@ -291,7 +381,7 @@ export function TimezoneCombobox({
                           : "text-[#141413] hover:bg-[#FAF9F6]"
                     }`}
                   >
-                    <div className="min-w-0 truncate">
+                    <div className="min-w-0 overflow-hidden">
                       <div className="flex items-center gap-1.5 truncate">
                         <span className="font-medium truncate">{tz.city}</span>
                         <span
@@ -324,8 +414,10 @@ export function TimezoneCombobox({
               })
             )}
           </div>
-        </div>
-      ) : null}
+        </div>,
+        document.body
+      )
+        : null}
     </div>
   );
 }

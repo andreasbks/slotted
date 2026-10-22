@@ -16,6 +16,7 @@ import {
   sanitizePollForClient,
 } from "./poll-record";
 import type { PollData, PollParticipant } from "./slotted-data";
+import { logServerIssue } from "./server-log";
 
 type PollRow = typeof polls.$inferSelect;
 type ParticipantRow = typeof pollParticipants.$inferSelect;
@@ -39,7 +40,7 @@ async function withDatabase<T>(operation: () => Promise<T>): Promise<T> {
     return await operation();
   } catch (error) {
     if (isApplicationError(error)) throw error;
-    console.error("[slotted] database request failed");
+    logServerIssue(error);
     throw new Error("Database request failed");
   }
 }

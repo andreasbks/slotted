@@ -1,6 +1,8 @@
 import { ImageResponse } from "next/og";
+import { unstable_rethrow } from "next/navigation";
 import { getPollBySlug } from "@/lib/store-server";
 import { computeRankedWindows, formatDateHeader } from "@/lib/slotted-data";
+import { logServerIssue } from "@/lib/server-log";
 
 export const size = {
   width: 1200,
@@ -15,7 +17,13 @@ export default async function OpenGraphImage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
-  const poll = await getPollBySlug(slug);
+  let poll = null;
+  try {
+    poll = await getPollBySlug(slug);
+  } catch (error) {
+    unstable_rethrow(error);
+    logServerIssue(error);
+  }
 
   const title = poll?.title || "Group Poll";
   const duration = poll?.durationMinutes || 30;

@@ -138,10 +138,7 @@ export function CalendarPicker({
     const firstOfMonth = new Date(Date.UTC(viewYear, viewMonth, 1));
     // Convert Sunday=0..Saturday=6 into Monday=0..Sunday=6
     const startOffset = (firstOfMonth.getUTCDay() + 6) % 7;
-    const daysInMonth = new Date(
-      Date.UTC(viewYear, viewMonth + 1, 0)
-    ).getUTCDate();
-    const totalCells = startOffset + daysInMonth > 35 ? 42 : 35;
+    const totalCells = 42;
 
     const cells: CalendarCell[] = [];
     for (let i = 0; i < totalCells; i++) {
@@ -294,42 +291,22 @@ export function CalendarPicker({
     }
   };
 
-  const selectNextMonFri = () => {
-    const start = parseIsoParts(minDateIso);
-    const base = new Date(Date.UTC(start.year, start.month, start.day));
-    const dayOfWeek = base.getUTCDay();
-    const daysUntilMonday =
-      dayOfWeek === 1 ? 0 : (8 - dayOfWeek) % 7 || 7;
-    const nextWorkweek: string[] = [];
-    for (let i = 0; i < 5; i++) {
-      const d = new Date(base);
-      d.setUTCDate(base.getUTCDate() + daysUntilMonday + i);
-      nextWorkweek.push(d.toISOString().slice(0, 10));
-    }
-    onChangeDates(nextWorkweek);
-    const firstParts = parseIsoParts(nextWorkweek[0]);
-    setViewYear(firstParts.year);
-    setViewMonth(firstParts.month);
-    setAnchorIso(nextWorkweek[0]);
-  };
-
   return (
     <div className="rounded-2xl border border-[#E4E2DA] bg-white p-3 sm:p-3.5">
-      {/* Calendar Header: Month/Year + Navigation + Quick Helper */}
-      <div className="mb-2.5 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5">
+      <div className="mb-2.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+        <div className="flex h-7 shrink-0 items-center">
           <button
             type="button"
             aria-label="Previous month"
             disabled={!canGoPrev}
             onClick={() => navigateMonth(-1)}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] text-[#141413] hover:border-[#141413] disabled:opacity-35 disabled:pointer-events-none transition cursor-pointer"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] text-[#141413] hover:border-[#141413] disabled:pointer-events-none disabled:opacity-35 transition cursor-pointer"
           >
             <ChevronLeft className="h-3.5 w-3.5" />
           </button>
           <span
             aria-live="polite"
-            className="min-w-[128px] text-center font-mono text-xs font-semibold text-[#141413] tabular-nums"
+            className="mx-1.5 inline-flex h-7 w-36 shrink-0 items-center justify-center overflow-hidden text-ellipsis whitespace-nowrap text-center font-mono text-xs font-semibold text-[#141413] tabular-nums"
           >
             {monthYearLabel}
           </span>
@@ -338,24 +315,14 @@ export function CalendarPicker({
             aria-label="Next month"
             disabled={!canGoNext}
             onClick={() => navigateMonth(1)}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] text-[#141413] hover:border-[#141413] disabled:opacity-35 disabled:pointer-events-none transition cursor-pointer"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] text-[#141413] hover:border-[#141413] disabled:pointer-events-none disabled:opacity-35 transition cursor-pointer"
           >
             <ChevronRight className="h-3.5 w-3.5" />
           </button>
         </div>
-
-        <div className="flex items-center gap-2 font-mono text-[11px]">
-          <span className="text-[#575550] tabular-nums">
-            {selectedDates.length} {selectedDates.length === 1 ? "date" : "dates"}
-          </span>
-          <button
-            type="button"
-            onClick={selectNextMonFri}
-            className="rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2 py-1 text-[11px] text-[#575550] hover:border-[#141413] hover:text-[#141413] transition cursor-pointer"
-          >
-            Next Mon–Fri
-          </button>
-        </div>
+        <span className="font-mono text-[11px] tabular-nums text-[#575550]">
+          {selectedDates.length} {selectedDates.length === 1 ? "date" : "dates"}
+        </span>
       </div>
 
       {/* 7-Column Accessible Calendar Grid */}
@@ -378,7 +345,7 @@ export function CalendarPicker({
           ))}
         </div>
 
-        <div className="space-y-1">
+        <div className="grid gap-1">
           {weeks.map((week, wIdx) => (
             <div key={wIdx} role="row" className="grid grid-cols-7 gap-1">
               {week.map((cell) => {

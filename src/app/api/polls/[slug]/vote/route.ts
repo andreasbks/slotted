@@ -15,11 +15,14 @@ import {
   upsertParticipantVote,
 } from "@/lib/store-server";
 import { getClerkIdentityHash } from "@/lib/optional-auth-server";
+import { blockedBySetup, respondToFailure } from "@/lib/request-failure";
 
 export async function POST(
   request: Request,
   context: { params: Promise<{ slug: string }> }
 ) {
+  const blocked = blockedBySetup("guest");
+  if (blocked) return blocked;
   try {
     assertSameOrigin(request);
     const { slug } = await context.params;
@@ -57,10 +60,7 @@ export async function POST(
       });
     }
     return response;
-  } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed to save vote" },
-      { status: 400 }
-    );
+  } catch (error) {
+    return respondToFailure(error, "Couldn’t save that. Try again.", "guest");
   }
 }

@@ -13,8 +13,11 @@ import {
   rotateDeviceIdentity,
 } from "@/lib/store-server";
 import { RECOVERY_ATTEMPT_LIMIT, RECOVERY_WINDOW_MS } from "@/lib/rate-limit";
+import { blockedBySetup, respondToFailure } from "@/lib/request-failure";
 
 export async function POST(request: Request) {
+  const blocked = blockedBySetup("guest");
+  if (blocked) return blocked;
   try {
     assertSameOrigin(request);
     const body = await request.json();
@@ -67,7 +70,7 @@ export async function POST(request: Request) {
       maxAge: 400 * 24 * 60 * 60,
     });
     return response;
-  } catch {
-    return NextResponse.json({ error: "Recovery failed." }, { status: 400 });
+  } catch (error) {
+    return respondToFailure(error, "Couldn’t do that. Try again.", "guest");
   }
 }
