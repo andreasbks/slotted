@@ -30,8 +30,8 @@ interface TimezoneComboboxProps {
 interface PanelPlacement {
   left: number;
   width: number;
-  maxHeight: number;
   top: number;
+  listHeight: number;
 }
 
 export function TimezoneCombobox({
@@ -55,6 +55,9 @@ export function TimezoneCombobox({
   const panelRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const rowRef = useRef(33);
+  const chromeRef = useRef(96);
+  const fittedRef = useRef(false);
 
   const selectedInfo = useMemo(
     () => getTimezoneInfo(value, referenceDateIso),
@@ -70,10 +73,44 @@ export function TimezoneCombobox({
     setOpen(false);
     setPlacement(null);
     setQuery("");
+    fittedRef.current = false;
     if (returnFocus) {
       requestAnimationFrame(() => {
         triggerRef.current?.focus();
       });
+    }
+  }, []);
+
+  const readChrome = useCallback(() => {
+    const panel = panelRef.current;
+    const list = listRef.current;
+    if (!panel || !list) return;
+    const option = list.querySelector<HTMLElement>("[data-tz-index]");
+    const row = option ? Math.round(option.getBoundingClientRect().height) : 0;
+    if (row > 0) rowRef.current = row;
+    const panelRect = panel.getBoundingClientRect();
+    const listRect = list.getBoundingClientRect();
+    const chrome = Math.round(
+      listRect.top - panelRect.top + (panelRect.bottom - listRect.bottom)
+    );
+    if (chrome > 24 && chrome < 240) chromeRef.current = chrome;
+  }, []);
+
+  const fitTrigger = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger || fittedRef.current) return;
+    fittedRef.current = true;
+    const rect = trigger.getBoundingClientRect();
+    const margin = 8;
+    const gap = 6;
+    const needed = chromeRef.current + rowRef.current * 8 + gap + margin;
+    const spaceBelow = window.innerHeight - margin - (rect.bottom + gap);
+    if (spaceBelow >= needed) return;
+    const delta = needed - spaceBelow;
+    const maxScroll = Math.max(0, rect.top - margin);
+    const amount = Math.min(delta, maxScroll);
+    if (amount > 1) {
+      window.scrollBy({ top: amount, behavior: "instant" });
     }
   }, []);
 
@@ -83,41 +120,47 @@ export function TimezoneCombobox({
     const rect = trigger.getBoundingClientRect();
     const margin = 8;
     const gap = 6;
-    const width = Math.min(360, window.innerWidth - margin * 2);
-    const maxPanel = Math.min(320, window.innerHeight - margin * 2);
+    const row = rowRef.current;
+    const chrome = chromeRef.current;
+    const form = trigger.closest("form");
+    const formRect = form?.getBoundingClientRect();
+    const width = Math.min(
+      formRect && formRect.width > 240 ? formRect.width : 360,
+      window.innerWidth - margin * 2
+    );
+    const below = window.innerHeight - margin - (rect.bottom + gap);
     const above = rect.top - gap - margin;
-    let top = rect.bottom + gap;
-    let height = Math.min(maxPanel, window.innerHeight - margin - top);
-    if (height < 180 && above > height) {
-      height = Math.min(maxPanel, above);
-      top = rect.top - gap - height;
-    }
-    top = Math.max(margin, Math.floor(top));
-    height = Math.min(height, window.innerHeight - margin - top);
-    height = Math.max(0, Math.floor(height));
-    const preferredLeft = align === "right" ? rect.right - width : rect.left;
+    const openUp = below < chrome + row * 4 && above > below;
+    const room = Math.max(row, openUp ? above : below);
+    const rows = Math.max(1, Math.min(8, Math.floor((room - chrome) / row)));
+    const listHeight = rows * row;
+    const panelHeight = chrome + listHeight;
+    let top = openUp ? rect.top - gap - panelHeight : rect.bottom + gap;
+    const maxTop = Math.max(margin, window.innerHeight - margin - panelHeight);
+    top = Math.min(Math.max(margin, top), maxTop);
+    const preferredLeft =
+      formRect && formRect.width > 240
+        ? formRect.left
+        : align === "right"
+          ? rect.right - width
+          : rect.left;
     const left = Math.min(
       Math.max(margin, preferredLeft),
       Math.max(margin, window.innerWidth - width - margin)
     );
-    return { left: Math.floor(left), width, maxHeight: height, top };
+    return {
+      left: Math.floor(left),
+      width: Math.floor(width),
+      top: Math.floor(top),
+      listHeight,
+    };
   }, [align]);
 
   useLayoutEffect(() => {
-    if (!open) {
-      nudgedTrigger.current = false;
-      return;
-    }
+    if (!open) return;
     let frame = 0;
     const tick = () => {
-      const trigger = triggerRef.current;
-      if (trigger && !nudgedTrigger.current) {
-        const rect = trigger.getBoundingClientRect();
-        if (rect.top < 8 || rect.bottom > window.innerHeight - 16) {
-          trigger.scrollIntoView({ block: "center", inline: "nearest" });
-        }
-        nudgedTrigger.current = true;
-      }
+      readChrome();
       const next = measure();
       setPlacement((current) => {
         if (!next) return current;
@@ -125,7 +168,7 @@ export function TimezoneCombobox({
           current &&
           current.left === next.left &&
           current.width === next.width &&
-          current.maxHeight === next.maxHeight &&
+          current.listHeight === next.listHeight &&
           current.top === next.top
         ) {
           return current;
@@ -136,17 +179,16 @@ export function TimezoneCombobox({
     };
     frame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(frame);
-  }, [open, measure]);
+  }, [open, measure, readChrome]);
 
   const didFocusPanel = useRef(false);
-  const nudgedTrigger = useRef(false);
   useEffect(() => {
     if (!open) {
       didFocusPanel.current = false;
       return;
     }
     if (!placement || didFocusPanel.current) return;
-    inputRef.current?.focus();
+    inputRef.current?.focus({ preventScroll: true });
     didFocusPanel.current = true;
   }, [open, placement]);
 
@@ -251,9 +293,10 @@ export function TimezoneCombobox({
             const next = !prev;
             if (next) {
               setActiveIndex(0);
-              triggerRef.current?.scrollIntoView({ block: "nearest" });
+              fitTrigger();
               setPlacement(measure());
             } else {
+              fittedRef.current = false;
               setPlacement(null);
             }
             return next;
@@ -286,12 +329,10 @@ export function TimezoneCombobox({
             position: "fixed",
             left: placement.left,
             width: placement.width,
-            height: placement.maxHeight,
-            maxHeight: placement.maxHeight,
             top: placement.top,
-            zIndex: 80,
+            zIndex: 200,
           }}
-          className="flex flex-col overflow-hidden rounded-2xl border border-[#E4E2DA] bg-white p-2.5 text-[#141413] shadow-[0_20px_50px_rgba(20,20,19,0.22)]"
+          className="flex flex-col rounded-2xl border border-[#E4E2DA] bg-white p-2.5 text-[#141413] shadow-[0_20px_50px_rgba(20,20,19,0.22)]"
         >
           <div className="relative flex items-center">
             <Search className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-[#8A8780]" />
@@ -353,7 +394,8 @@ export function TimezoneCombobox({
             id={listboxId}
             role="listbox"
             aria-label="Matching timezones"
-            className="mt-1.5 min-h-0 flex-1 overflow-y-auto overscroll-contain divide-y divide-[#F2F0E9]"
+            style={{ height: placement.listHeight, maxHeight: placement.listHeight }}
+            className="mt-1.5 overflow-y-auto overscroll-contain divide-y divide-[#F2F0E9]"
           >
             {options.length === 0 ? (
               <div className="px-3 py-4 text-center font-mono text-xs text-[#8A8780]">
