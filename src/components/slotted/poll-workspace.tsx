@@ -10,7 +10,6 @@ import {
   Eraser,
   Eye,
   EyeOff,
-  Globe,
   GripVertical,
   Info,
   KeyRound,
@@ -25,17 +24,20 @@ import {
   PollData,
   PollParticipant,
   RankedWindow,
-  TIMEZONE_OPTIONS,
   computeRankedWindows,
   formatDateHeader,
   formatDurationBadge,
   formatMinutesToDisplay,
+  formatRecurrenceSummary,
   generateDayTimeSlots,
+  getTimezoneInfo,
   makeSlotKey,
   parseSlotKey,
 } from "@/lib/slotted-data";
 import { ArcEaselTicket } from "./arc-easel-ticket";
 import { Avatar } from "./avatar";
+import { TimezoneCombobox } from "./timezone-combobox";
+import { DurationControls } from "./duration-controls";
 
 interface PollWorkspaceProps {
   poll: PollData;
@@ -563,8 +565,10 @@ export function PollWorkspace({
     };
   }, [inspectedSlotKey, viewerTimezone, poll.timezone]);
 
-  const currentTzOption =
-    TIMEZONE_OPTIONS.find((t) => t.id === viewerTimezone) || TIMEZONE_OPTIONS[1];
+  const currentTzOption = getTimezoneInfo(
+    viewerTimezone,
+    poll.candidateDates[0]
+  );
 
   const getCellMetrics = (slotKey: string) => {
     let availableCount = 0;
@@ -835,6 +839,12 @@ export function PollWorkspace({
               <span>Hosted by {poll.hostName}</span>
               <span>·</span>
               <span>{poll.candidateDates.length} days</span>
+              {formatRecurrenceSummary(poll.recurrenceRule) ? (
+                <>
+                  <span>·</span>
+                  <span>{formatRecurrenceSummary(poll.recurrenceRule)}</span>
+                </>
+              ) : null}
               <span>·</span>
               <span>
                 {currentTzOption.shortCode} ({currentTzOption.utcLabel})
@@ -863,66 +873,27 @@ export function PollWorkspace({
 
           {/* Right Controls: Duration, Timezone & Share Link */}
           <div className="flex flex-wrap items-center gap-2">
-            {poll.canManagePoll && (poll.pollMode === "full_days" ? (
-              <div className="inline-flex items-center rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] p-1 font-mono text-xs tabular-nums">
-                {[
-                  { mins: 1440, label: "1d" },
-                  { mins: 2880, label: "2d" },
-                  { mins: 4320, label: "3d" },
-                ].map((opt) => (
-                  <button
-                    key={opt.mins}
-                    type="button"
-                    onClick={() => handleDurationChange(opt.mins)}
-                    className={`rounded-lg px-2.5 py-1 transition cursor-pointer ${
-                      poll.durationMinutes === opt.mins
-                        ? "bg-[#141413] text-[#F6F5F2] font-semibold"
-                        : "text-[#575550] hover:text-[#141413]"
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="inline-flex items-center rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] p-1 font-mono text-xs tabular-nums">
-                {[
-                  { mins: 15, label: "15m" },
-                  { mins: 30, label: "30m" },
-                  { mins: 60, label: "1h" },
-                  { mins: 120, label: "2h" },
-                ].map((opt) => (
-                  <button
-                    key={opt.mins}
-                    type="button"
-                    onClick={() => handleDurationChange(opt.mins)}
-                    className={`rounded-lg px-2.5 py-1 transition cursor-pointer ${
-                      poll.durationMinutes === opt.mins
-                        ? "bg-[#141413] text-[#F6F5F2] font-semibold"
-                        : "text-[#575550] hover:text-[#141413]"
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-            ))}
+            {poll.canManagePoll && (
+              <DurationControls
+                pollMode={poll.pollMode || "dates_and_hours"}
+                durationMinutes={poll.durationMinutes}
+                maxMinutes={
+                  poll.pollMode === "full_days"
+                    ? Math.max(1440, poll.candidateDates.length * 1440)
+                    : Math.max(30, (poll.dayEndHour - poll.dayStartHour) * 60)
+                }
+                onChange={handleDurationChange}
+                layout="inline"
+              />
+            )}
 
-            <div className="relative inline-flex items-center">
-              <Globe className="pointer-events-none absolute left-3 h-3.5 w-3.5 text-[#575550]" />
-              <select
-                aria-label="Select Timezone"
-                value={viewerTimezone}
-                onChange={(e) => onChangeViewerTimezone(e.target.value)}
-                className="appearance-none rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] pl-8 pr-7 py-2 font-mono text-xs font-medium text-[#141413] tabular-nums hover:border-[#141413] focus:outline-none cursor-pointer"
-              >
-                {TIMEZONE_OPTIONS.map((tz) => (
-                  <option key={tz.id} value={tz.id}>
-                    {tz.city} ({tz.shortCode})
-                  </option>
-                ))}
-              </select>
-            </div>
+            <TimezoneCombobox
+              value={viewerTimezone}
+              onChange={onChangeViewerTimezone}
+              referenceDateIso={poll.candidateDates[0]}
+              ariaLabel="Select timezone"
+              variant="compact"
+            />
 
             <button
               type="button"
@@ -1736,7 +1707,7 @@ export function PollWorkspace({
                 {poll.participants.map((p) => {
                   const isIsolated = isolatedParticipantId === p.id;
                   const slotCount = Object.keys(p.slots).length;
-                  const tz = TIMEZONE_OPTIONS.find((t) => t.id === p.timezone);
+                  const tz = getTimezoneInfo(p.timezone, poll.candidateDates[0]);
                   return (
                     <button
                       key={p.id}
@@ -1760,7 +1731,7 @@ export function PollWorkspace({
                           {p.isCurrentUser ? guestName || p.name : p.name}
                         </span>
                         <span className="text-[10px] text-[#8A8780]">
-                          {p.city} ({tz?.shortCode || "EDT"})
+                          {p.city} ({tz.shortCode})
                         </span>
                       </div>
                       <span className="inline-flex items-center gap-1 text-[10px] text-[#8A8780] tabular-nums">

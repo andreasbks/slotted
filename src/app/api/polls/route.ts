@@ -41,6 +41,11 @@ export async function POST(request: Request) {
       description: body.description || "",
       location: body.location || "",
       pollMode: body.pollMode === "full_days" ? "full_days" : "dates_and_hours",
+      scheduleType:
+        body.scheduleType === "days_of_week"
+          ? "days_of_week"
+          : "specific_dates",
+      recurrenceRule: body.recurrenceRule || null,
       hostName: body.hostName || "Alex",
       deviceHash: identityHash,
       timezone: body.timezone || "America/New_York",

@@ -15,7 +15,6 @@ import {
   Copy,
   CornerDownLeft,
   EyeOff,
-  Globe,
   KeyRound,
   SlidersHorizontal,
   Trash2,
@@ -26,53 +25,45 @@ import {
   INITIAL_POLLS,
   PollData,
   PollMode,
+  RecurrenceRule,
   STORAGE_KEY_GUEST,
   STORAGE_KEY_POLLS,
   STORAGE_KEY_TZ,
-  TIMEZONE_OPTIONS,
+  ScheduleType,
   VisibilityMode,
+  WEEKDAY_LABELS,
   computeRankedWindows,
   formatDateHeader,
   formatDurationBadge,
   formatMinutesToDisplay,
+  formatRecurrenceSummary,
+  generateRecurringDates,
+  isValidTimezone,
 } from "@/lib/slotted-data";
 import { PollWorkspace } from "./poll-workspace";
 import { IdentityMenu } from "./identity-menu";
+import { CalendarPicker } from "./calendar-picker";
+import { TimezoneCombobox } from "./timezone-combobox";
+import { DurationControls } from "./duration-controls";
 
-function buildCalendarDays() {
+function localTodayIso(): string {
   const today = new Date();
-  const start = new Date(
-    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
-  );
-  return Array.from({ length: 14 }, (_, index) => {
-    const date = new Date(start);
-    date.setUTCDate(start.getUTCDate() + index);
-    const iso = date.toISOString().slice(0, 10);
-    const weekday = date.getUTCDay();
-    return {
-      iso,
-      day: date.toLocaleDateString("en-US", {
-        weekday: "short",
-        timeZone: "UTC",
-      }),
-      num: String(date.getUTCDate()).padStart(2, "0"),
-      month: date.toLocaleDateString("en-US", {
-        month: "short",
-        timeZone: "UTC",
-      }),
-      weekend: weekday === 0 || weekday === 6,
-    };
-  });
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  const day = String(today.getDate()).padStart(2, "0");
+  return `${today.getFullYear()}-${month}-${day}`;
 }
 
-const CALENDAR_GRID_DAYS = buildCalendarDays();
-const DEFAULT_DATES = CALENDAR_GRID_DAYS.slice(1, 4).map((day) => day.iso);
-const WEEKEND_DATES = CALENDAR_GRID_DAYS.filter((day) => day.weekend)
-  .slice(0, 3)
-  .map((day) => day.iso);
-const WEEKDAY_DATES = CALENDAR_GRID_DAYS.filter((day) => !day.weekend)
-  .slice(0, 5)
-  .map((day) => day.iso);
+function addDaysIso(iso: string, days: number): string {
+  const [year, month, day] = iso.split("-").map(Number);
+  const date = new Date(Date.UTC(year, (month || 1) - 1, day || 1));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function initialSpecificDates(): string[] {
+  const today = localTodayIso();
+  return [1, 2, 3].map((offset) => addDaysIso(today, offset));
+}
 
 interface SlottedAppShellProps {
   initialSlug?: string;
@@ -110,16 +101,21 @@ export function SlottedAppShell({
   // Direct Creation Modal State (Zero conversational prompt box)
   const [pollTitle, setPollTitle] = useState<string>("");
   const [pollMode, setPollMode] = useState<PollMode>("dates_and_hours");
-  const [selectedDates, setSelectedDates] =
-    useState<string[]>(DEFAULT_DATES);
+  const [scheduleType, setScheduleType] =
+    useState<ScheduleType>("specific_dates");
+  const [todayIso] = useState<string>(localTodayIso);
+  const [selectedDates, setSelectedDates] = useState<string[]>(
+    initialSpecificDates
+  );
+  const [weekdays, setWeekdays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [spanMode, setSpanMode] = useState<"weeks" | "date_range">("weeks");
+  const [weeksCount, setWeeksCount] = useState<number>(4);
+  const [rangeStart, setRangeStart] = useState<string>(localTodayIso);
+  const [rangeEnd, setRangeEnd] = useState<string>(() =>
+    addDaysIso(localTodayIso(), 28)
+  );
   const [startHour, setStartHour] = useState<number>(9);
   const [endHour, setEndHour] = useState<number>(17);
-
-  // Drag-selecting dates on the creation calendar
-  const [draggingCalendar, setDraggingCalendar] = useState<boolean>(false);
-  const [dragCalendarAction, setDragCalendarAction] = useState<
-    "add" | "remove"
-  >("add");
 
   // Advanced Settings Disclosure State
   const [advancedOpen, setAdvancedOpen] =
@@ -135,6 +131,7 @@ export function SlottedAppShell({
   const [creatingState, setCreatingState] = useState<
     "idle" | "creating" | "copied"
   >("idle");
+  const [createError, setCreateError] = useState<string>("");
   const [createdSlugPreview, setCreatedSlugPreview] = useState<string | null>(
     null
   );
@@ -180,7 +177,7 @@ export function SlottedAppShell({
       const tz = localStorage.getItem(STORAGE_KEY_TZ);
       queueMicrotask(() => {
         if (g) setGuestName(g);
-        if (tz && TIMEZONE_OPTIONS.some((o) => o.id === tz)) {
+        if (tz && isValidTimezone(tz)) {
           setViewerTimezone(tz);
         }
       });
@@ -191,77 +188,30 @@ export function SlottedAppShell({
     };
   }, [initialSlug, initialViewMode]);
 
-  // Global pointerup for calendar drag
-  useEffect(() => {
-    if (!draggingCalendar) return;
-    const stop = () => setDraggingCalendar(false);
-    window.addEventListener("pointerup", stop);
-    return () => window.removeEventListener("pointerup", stop);
-  }, [draggingCalendar]);
-
   const handleSwitchPollMode = (nextMode: PollMode) => {
     setPollMode(nextMode);
-    if (nextMode === "full_days") {
-      setDurationMinutes(1440); // Default 1 full day (or user can pick 2d / 3d)
-      setSelectedDates(WEEKEND_DATES);
-    } else {
-      if (durationMinutes >= 1440) {
-        setDurationMinutes(30);
-      }
-      setSelectedDates(DEFAULT_DATES);
-    }
-  };
-
-  const applyQuickPreset = (
-    preset: "call_30m" | "dinner_2h" | "weekend_trip" | "next_week"
-  ) => {
-    if (preset === "call_30m") {
-      setPollMode("dates_and_hours");
-      setSelectedDates(DEFAULT_DATES);
-      setStartHour(9);
-      setEndHour(17);
-      setDurationMinutes(30);
-      if (!pollTitle) setPollTitle("30m Intro Call");
-    } else if (preset === "dinner_2h") {
-      setPollMode("dates_and_hours");
-      setSelectedDates(DEFAULT_DATES);
-      setStartHour(18);
-      setEndHour(22);
-      setDurationMinutes(120);
-      if (!pollTitle) setPollTitle("Team Dinner");
-    } else if (preset === "weekend_trip") {
-      setPollMode("full_days");
-      setSelectedDates(WEEKEND_DATES);
-      setDurationMinutes(4320); // 3 days
-      if (!pollTitle) setPollTitle("Weekend Group Trip");
-    } else if (preset === "next_week") {
-      setSelectedDates(WEEKDAY_DATES);
-    }
-  };
-
-  const handleDatePointerDown = (iso: string) => {
-    const isCurrentlySelected = selectedDates.includes(iso);
-    const action = isCurrentlySelected ? "remove" : "add";
-    setDragCalendarAction(action);
-    setDraggingCalendar(true);
-
-    setSelectedDates((prev) => {
-      if (action === "remove") {
-        return prev.length > 1 ? prev.filter((d) => d !== iso) : prev;
-      }
-      return prev.includes(iso) ? prev : [...prev, iso].sort();
+    setDurationMinutes((current) => {
+      if (nextMode === "full_days") return current >= 1440 ? current : 1440;
+      return current >= 1440 ? 30 : current;
     });
   };
 
-  const handleDatePointerEnter = (iso: string) => {
-    if (!draggingCalendar) return;
-    setSelectedDates((prev) => {
-      if (dragCalendarAction === "remove") {
-        return prev.length > 1 ? prev.filter((d) => d !== iso) : prev;
-      }
-      return prev.includes(iso) ? prev : [...prev, iso].sort();
-    });
+  const recurrenceRule: RecurrenceRule = {
+    weekdays,
+    spanMode,
+    weeksCount,
+    startDate: rangeStart,
+    endDate: spanMode === "date_range" ? rangeEnd : null,
   };
+  const recurringDates =
+    scheduleType === "days_of_week" ? generateRecurringDates(recurrenceRule) : [];
+  const recurrenceSummary = formatRecurrenceSummary(recurrenceRule);
+  const activeDateCount =
+    scheduleType === "days_of_week" ? recurringDates.length : selectedDates.length;
+  const maxDurationMinutes =
+    pollMode === "full_days"
+      ? Math.max(1440, activeDateCount * 1440)
+      : Math.max(30, (endHour - startHour) * 60);
 
   const activePoll = useMemo(() => {
     return polls.find((p) => p.slug === activeSlug) || null;
@@ -307,6 +257,17 @@ export function SlottedAppShell({
     if (creatingState !== "idle") return;
 
     setCreatingState("creating");
+    setCreateError("");
+    if (scheduleType === "days_of_week" && weekdays.length === 0) {
+      setCreateError("Choose at least one day of the week.");
+      setCreatingState("idle");
+      return;
+    }
+    if (scheduleType === "specific_dates" && selectedDates.length === 0) {
+      setCreateError("Choose at least one date.");
+      setCreatingState("idle");
+      return;
+    }
     const finalTitle =
       pollTitle.trim() ||
       (pollMode === "full_days" ? "Group Trip" : "Team Sync");
@@ -317,9 +278,12 @@ export function SlottedAppShell({
         body: JSON.stringify({
           title: finalTitle,
           pollMode,
+          scheduleType,
+          recurrenceRule: scheduleType === "days_of_week" ? recurrenceRule : null,
           hostName: guestName || "Alex",
           timezone: viewerTimezone,
-          candidateDates: selectedDates,
+          candidateDates:
+            scheduleType === "days_of_week" ? recurringDates : selectedDates,
           dayStartHour: startHour,
           dayEndHour: Math.max(startHour + 2, endHour),
           slotMinutes: 30,
@@ -367,7 +331,11 @@ export function SlottedAppShell({
         }, 550);
         return;
       }
-    } catch {}
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      setCreateError(data.error || "Couldn’t create the poll.");
+    } catch {
+      setCreateError("Couldn’t create the poll.");
+    }
 
     setCreatingState("idle");
   };
@@ -387,9 +355,6 @@ export function SlottedAppShell({
     setCopiedPollId(id);
     setTimeout(() => setCopiedPollId(null), 1800);
   };
-
-  const currentTzOption =
-    TIMEZONE_OPTIONS.find((t) => t.id === viewerTimezone) || TIMEZONE_OPTIONS[1];
 
   const reloadActivePoll = async () => {
     if (!activeSlug) return;
@@ -577,12 +542,13 @@ export function SlottedAppShell({
               </span>
             </a>
 
-            <div className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-black/30 px-3 py-1.5 text-[11px] text-white/85 tabular-nums">
-              <Globe className="h-3 w-3 text-white/70" />
-              <span>
-                {currentTzOption.shortCode} · {currentTzOption.utcLabel}
-              </span>
-            </div>
+            <TimezoneCombobox
+              value={viewerTimezone}
+              onChange={handleChangeTimezone}
+              referenceDateIso={selectedDates[0] || todayIso}
+              ariaLabel="Your timezone"
+              variant="dark"
+            />
             <IdentityMenu name={guestName} />
           </div>
         </header>
@@ -638,73 +604,139 @@ export function SlottedAppShell({
                     </button>
                   </div>
 
-                  {/* Quick Intent Presets ("30m call", "Dinner", "Weekend") */}
-                  <div className="flex items-center gap-1 font-mono text-[11px]">
+                  <div className="inline-flex items-center rounded-xl border border-[#E4E2DA] bg-white p-1 font-mono text-xs">
                     <button
                       type="button"
-                      onClick={() => applyQuickPreset("call_30m")}
-                      className="rounded-lg border border-[#E4E2DA] bg-white px-2.5 py-1 text-[#575550] hover:border-[#141413] hover:text-[#141413] transition cursor-pointer"
+                      onClick={() => setScheduleType("specific_dates")}
+                      aria-pressed={scheduleType === "specific_dates"}
+                      className={`cursor-pointer rounded-lg px-3 py-1.5 transition ${
+                        scheduleType === "specific_dates"
+                          ? "bg-[#141413] font-semibold text-[#F6F5F2]"
+                          : "text-[#575550] hover:text-[#141413]"
+                      }`}
                     >
-                      30m call
+                      Specific dates
                     </button>
                     <button
                       type="button"
-                      onClick={() => applyQuickPreset("dinner_2h")}
-                      className="rounded-lg border border-[#E4E2DA] bg-white px-2.5 py-1 text-[#575550] hover:border-[#141413] hover:text-[#141413] transition cursor-pointer"
+                      onClick={() => setScheduleType("days_of_week")}
+                      aria-pressed={scheduleType === "days_of_week"}
+                      className={`cursor-pointer rounded-lg px-3 py-1.5 transition ${
+                        scheduleType === "days_of_week"
+                          ? "bg-[#141413] font-semibold text-[#F6F5F2]"
+                          : "text-[#575550] hover:text-[#141413]"
+                      }`}
                     >
-                      Dinner
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => applyQuickPreset("weekend_trip")}
-                      className="rounded-lg border border-[#E4E2DA] bg-white px-2.5 py-1 text-[#575550] hover:border-[#141413] hover:text-[#141413] transition cursor-pointer"
-                    >
-                      Holiday
+                      Days of the week
                     </button>
                   </div>
                 </div>
 
-                {/* 3. Direct Interactive Calendar Date Picker (Click or Drag Across Dates) */}
-                <div>
-                  <div className="flex items-center justify-between mb-2 font-mono text-[11px] text-[#575550]">
-                    <span className="uppercase tracking-wider text-[#8A8780]">
-                      Candidate dates ({selectedDates.length} selected)
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => applyQuickPreset("next_week")}
-                      className="text-[#575550] underline decoration-[#C9C6BC] underline-offset-2 hover:text-[#141413] cursor-pointer"
-                    >
-                      Select next Mon–Fri
-                    </button>
+                {scheduleType === "specific_dates" ? (
+                  <CalendarPicker
+                    selectedDates={selectedDates}
+                    onChangeDates={setSelectedDates}
+                    minDateIso={todayIso}
+                    maxMonthsAhead={120}
+                  />
+                ) : (
+                  <div className="space-y-3 rounded-2xl border border-[#E4E2DA] bg-white p-3 sm:p-3.5">
+                    <div className="flex flex-wrap gap-1">
+                      {WEEKDAY_LABELS.map((weekday) => {
+                        const selected = weekdays.includes(weekday.day);
+                        return (
+                          <button
+                            key={weekday.day}
+                            type="button"
+                            aria-pressed={selected}
+                            onClick={() =>
+                              setWeekdays((current) =>
+                                selected
+                                  ? current.filter((day) => day !== weekday.day)
+                                  : [...current, weekday.day]
+                              )
+                            }
+                            className={`cursor-pointer rounded-lg border px-2.5 py-1.5 font-mono text-xs transition ${
+                              selected
+                                ? "border-[#141413] bg-[#141413] font-semibold text-[#F6F5F2]"
+                                : "border-[#E4E2DA] bg-[#FAF9F6] text-[#575550] hover:border-[#141413]"
+                            }`}
+                          >
+                            {weekday.short}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
+                      <button
+                        type="button"
+                        onClick={() => setSpanMode("weeks")}
+                        className={`cursor-pointer rounded-lg border px-2.5 py-1 ${
+                          spanMode === "weeks"
+                            ? "border-[#141413] bg-[#141413] text-[#F6F5F2]"
+                            : "border-[#E4E2DA] text-[#575550]"
+                        }`}
+                      >
+                        For weeks
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSpanMode("date_range")}
+                        className={`cursor-pointer rounded-lg border px-2.5 py-1 ${
+                          spanMode === "date_range"
+                            ? "border-[#141413] bg-[#141413] text-[#F6F5F2]"
+                            : "border-[#E4E2DA] text-[#575550]"
+                        }`}
+                      >
+                        Until a date
+                      </button>
+                      <label className="inline-flex items-center gap-1.5 text-[#575550]">
+                        Starting
+                        <input
+                          type="date"
+                          aria-label="Recurrence start date"
+                          min={todayIso}
+                          value={rangeStart}
+                          onChange={(event) => setRangeStart(event.target.value)}
+                          className="rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2 py-1 text-[#141413]"
+                        />
+                      </label>
+                      {spanMode === "weeks" ? (
+                        <label className="inline-flex items-center gap-1.5 text-[#575550]">
+                          <input
+                            type="number"
+                            min={1}
+                            max={26}
+                            aria-label="Number of weeks"
+                            value={weeksCount}
+                            onChange={(event) =>
+                              setWeeksCount(
+                                Math.min(26, Math.max(1, Number(event.target.value) || 1))
+                              )
+                            }
+                            className="w-16 rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2 py-1 text-[#141413]"
+                          />
+                          weeks
+                        </label>
+                      ) : (
+                        <label className="inline-flex items-center gap-1.5 text-[#575550]">
+                          Until
+                          <input
+                            type="date"
+                            aria-label="Recurrence end date"
+                            min={rangeStart || todayIso}
+                            value={rangeEnd}
+                            onChange={(event) => setRangeEnd(event.target.value)}
+                            className="rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2 py-1 text-[#141413]"
+                          />
+                        </label>
+                      )}
+                    </div>
+                    <p className="font-mono text-[11px] text-[#575550]">
+                      {recurrenceSummary || "Choose at least one weekday"} · {recurringDates.length} dates
+                    </p>
                   </div>
-
-                  <div className="grid grid-cols-7 gap-1.5">
-                    {CALENDAR_GRID_DAYS.map((d) => {
-                      const isSelected = selectedDates.includes(d.iso);
-                      return (
-                        <button
-                          key={d.iso}
-                          type="button"
-                          onPointerDown={() => handleDatePointerDown(d.iso)}
-                          onPointerEnter={() => handleDatePointerEnter(d.iso)}
-                          className={`flex flex-col items-center rounded-xl border py-2 font-mono text-xs transition cursor-pointer ${
-                            isSelected
-                              ? "border-[#141413] bg-[#141413] text-[#F6F5F2] font-semibold"
-                              : d.weekend
-                              ? "border-[#E4E2DA] bg-[#F2F0E9]/70 text-[#575550] hover:border-[#141413]/40"
-                              : "border-[#E4E2DA] bg-white text-[#141413] hover:border-[#141413]/40"
-                          }`}
-                        >
-                          <span className="text-[10px] opacity-70">
-                            {d.day}
-                          </span>
-                          <span className="text-sm tabular-nums">{d.num}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+                )}
 
                 {/* 4. Candidate Hours Window (Only shown in "Dates + hours" mode) */}
                 {pollMode === "dates_and_hours" && (
@@ -767,51 +799,12 @@ export function SlottedAppShell({
                           <label className="block text-[10px] uppercase tracking-wider text-[#8A8780] mb-1.5">
                             Event duration
                           </label>
-                          {pollMode === "full_days" ? (
-                            <div className="grid grid-cols-3 gap-1.5">
-                              {[
-                                { mins: 1440, label: "1 Full day" },
-                                { mins: 2880, label: "2 Days (Weekend)" },
-                                { mins: 4320, label: "3 Days (Holiday)" },
-                              ].map((d) => (
-                                <button
-                                  key={d.mins}
-                                  type="button"
-                                  onClick={() => setDurationMinutes(d.mins)}
-                                  className={`rounded-xl border py-1.5 text-center transition cursor-pointer ${
-                                    durationMinutes === d.mins
-                                      ? "border-[#141413] bg-[#141413] text-[#F6F5F2] font-semibold"
-                                      : "border-[#E4E2DA] bg-[#FAF9F6] text-[#575550] hover:text-[#141413]"
-                                  }`}
-                                >
-                                  {d.label}
-                                </button>
-                              ))}
-                            </div>
-                          ) : (
-                            <div className="grid grid-cols-5 gap-1.5">
-                              {[
-                                { mins: 15, label: "15m" },
-                                { mins: 30, label: "30m" },
-                                { mins: 60, label: "1h" },
-                                { mins: 120, label: "2h" },
-                                { mins: 180, label: "3h" },
-                              ].map((d) => (
-                                <button
-                                  key={d.mins}
-                                  type="button"
-                                  onClick={() => setDurationMinutes(d.mins)}
-                                  className={`rounded-xl border py-1.5 text-center tabular-nums transition cursor-pointer ${
-                                    durationMinutes === d.mins
-                                      ? "border-[#141413] bg-[#141413] text-[#F6F5F2] font-semibold"
-                                      : "border-[#E4E2DA] bg-[#FAF9F6] text-[#575550] hover:text-[#141413]"
-                                  }`}
-                                >
-                                  {d.label}
-                                </button>
-                              ))}
-                            </div>
-                          )}
+                          <DurationControls
+                            pollMode={pollMode}
+                            durationMinutes={durationMinutes}
+                            maxMinutes={maxDurationMinutes}
+                            onChange={setDurationMinutes}
+                          />
                         </div>
 
                         {/* Access & Password Protection + Response Visibility */}
@@ -901,29 +894,24 @@ export function SlottedAppShell({
                             </span>
                           </label>
 
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-[#8A8780]">TZ:</span>
-                            <select
-                              aria-label="Poll Timezone"
-                              value={viewerTimezone}
-                              onChange={(e) =>
-                                handleChangeTimezone(e.target.value)
-                              }
-                              className="rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2 py-1 text-[11px] text-[#141413] focus:outline-none"
-                            >
-                              {TIMEZONE_OPTIONS.map((tz) => (
-                                <option key={tz.id} value={tz.id}>
-                                  {tz.city} ({tz.shortCode})
-                                </option>
-                              ))}
-                            </select>
-                          </div>
+                          <TimezoneCombobox
+                            value={viewerTimezone}
+                            onChange={handleChangeTimezone}
+                            referenceDateIso={selectedDates[0] || todayIso}
+                            ariaLabel="Poll timezone"
+                            align="right"
+                          />
                         </div>
                       </div>
                     </motion.div>
                   )}
                 </AnimatePresence>
               </div>
+              {createError ? (
+                <p role="alert" className="px-5 pb-3 font-mono text-xs text-red-700">
+                  {createError}
+                </p>
+              ) : null}
 
               {/* Bottom Action Bar Inside the Creation Card */}
               <div className="flex items-center justify-between border-t border-[#E4E2DA] bg-[#F2F0E9] px-5 py-3.5">

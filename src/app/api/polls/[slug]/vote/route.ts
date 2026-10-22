@@ -42,8 +42,8 @@ export async function POST(
     const updated = await upsertParticipantVote(slug, {
       deviceHash: clerkHash || hashSecret(deviceToken),
       name: body.name || "Alex",
-      timezone: body.timezone || "America/New_York",
-      city: body.city || "NYC",
+      timezone: body.timezone || poll.timezone || "America/New_York",
+      city: body.city,
       slots: body.slots || {},
     });
     if (!updated) {

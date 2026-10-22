@@ -6,57 +6,526 @@ export type VisibilityMode = "public" | "hidden_until_voted" | "host_only";
 
 export type PollMode = "dates_and_hours" | "full_days";
 
+export type ScheduleType = "specific_dates" | "days_of_week";
+
+export interface RecurrenceRule {
+  weekdays: number[]; // 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
+  spanMode: "weeks" | "date_range";
+  weeksCount: number;
+  startDate: string; // YYYY-MM-DD
+  endDate?: string | null; // YYYY-MM-DD
+}
+
 export interface TimezoneOption {
   id: string;
   label: string;
   shortCode: string;
   city: string;
+  region: string;
+  offsetMinutes: number;
   offsetHoursFromEDT: number;
   utcLabel: string;
+  searchKeywords: string;
 }
 
-export const TIMEZONE_OPTIONS: TimezoneOption[] = [
-  {
-    id: "America/Los_Angeles",
-    label: "San Francisco (PDT)",
-    shortCode: "PDT",
-    city: "SF",
-    offsetHoursFromEDT: -3,
-    utcLabel: "UTC-7",
-  },
-  {
-    id: "America/New_York",
-    label: "New York (EDT)",
-    shortCode: "EDT",
-    city: "NYC",
-    offsetHoursFromEDT: 0,
-    utcLabel: "UTC-4",
-  },
-  {
-    id: "Europe/London",
-    label: "London (BST)",
-    shortCode: "BST",
-    city: "LDN",
-    offsetHoursFromEDT: 5,
-    utcLabel: "UTC+1",
-  },
-  {
-    id: "Europe/Berlin",
-    label: "Berlin (CEST)",
-    shortCode: "CEST",
-    city: "BER",
-    offsetHoursFromEDT: 6,
-    utcLabel: "UTC+2",
-  },
-  {
-    id: "Asia/Tokyo",
-    label: "Tokyo (JST)",
-    shortCode: "JST",
-    city: "TYO",
-    offsetHoursFromEDT: 13,
-    utcLabel: "UTC+9",
-  },
+const FALLBACK_IANA_TIMEZONES: string[] = [
+  "UTC",
+  "Pacific/Honolulu",
+  "America/Anchorage",
+  "America/Los_Angeles",
+  "America/Vancouver",
+  "America/Tijuana",
+  "America/Phoenix",
+  "America/Denver",
+  "America/Edmonton",
+  "America/Chicago",
+  "America/Winnipeg",
+  "America/Mexico_City",
+  "America/Bogota",
+  "America/Lima",
+  "America/New_York",
+  "America/Toronto",
+  "America/Detroit",
+  "America/Caracas",
+  "America/Santiago",
+  "America/Halifax",
+  "America/Sao_Paulo",
+  "America/Argentina/Buenos_Aires",
+  "America/St_Johns",
+  "Atlantic/Azores",
+  "Atlantic/Reykjavik",
+  "Europe/London",
+  "Europe/Dublin",
+  "Europe/Lisbon",
+  "Africa/Casablanca",
+  "Africa/Lagos",
+  "Europe/Berlin",
+  "Europe/Paris",
+  "Europe/Madrid",
+  "Europe/Rome",
+  "Europe/Amsterdam",
+  "Europe/Brussels",
+  "Europe/Zurich",
+  "Europe/Vienna",
+  "Europe/Stockholm",
+  "Europe/Oslo",
+  "Europe/Copenhagen",
+  "Europe/Warsaw",
+  "Europe/Prague",
+  "Europe/Budapest",
+  "Europe/Belgrade",
+  "Africa/Johannesburg",
+  "Africa/Cairo",
+  "Europe/Athens",
+  "Europe/Helsinki",
+  "Europe/Bucharest",
+  "Europe/Sofia",
+  "Europe/Kyiv",
+  "Europe/Istanbul",
+  "Asia/Jerusalem",
+  "Asia/Beirut",
+  "Asia/Riyadh",
+  "Africa/Nairobi",
+  "Europe/Moscow",
+  "Asia/Tehran",
+  "Asia/Dubai",
+  "Asia/Baku",
+  "Asia/Tbilisi",
+  "Asia/Yerevan",
+  "Asia/Kabul",
+  "Asia/Karachi",
+  "Asia/Tashkent",
+  "Asia/Kolkata",
+  "Asia/Colombo",
+  "Asia/Kathmandu",
+  "Asia/Dhaka",
+  "Asia/Almaty",
+  "Asia/Yangon",
+  "Asia/Bangkok",
+  "Asia/Ho_Chi_Minh",
+  "Asia/Jakarta",
+  "Asia/Singapore",
+  "Asia/Kuala_Lumpur",
+  "Asia/Hong_Kong",
+  "Asia/Shanghai",
+  "Asia/Taipei",
+  "Asia/Manila",
+  "Australia/Perth",
+  "Asia/Tokyo",
+  "Asia/Seoul",
+  "Australia/Darwin",
+  "Australia/Adelaide",
+  "Australia/Brisbane",
+  "Australia/Sydney",
+  "Australia/Melbourne",
+  "Australia/Hobart",
+  "Pacific/Guam",
+  "Pacific/Noumea",
+  "Pacific/Auckland",
+  "Pacific/Fiji",
 ];
+
+const CITY_DISPLAY_OVERRIDES: Record<
+  string,
+  { city: string; aliases: string }
+> = {
+  UTC: { city: "UTC", aliases: "Coordinated Universal Time GMT Z" },
+  "America/Los_Angeles": {
+    city: "San Francisco",
+    aliases: "SF LA Los Angeles Seattle Silicon Valley Pacific PST PDT",
+  },
+  "America/New_York": {
+    city: "New York",
+    aliases: "NYC NY Boston Miami Washington DC Atlanta Eastern EST EDT",
+  },
+  "America/Chicago": {
+    city: "Chicago",
+    aliases: "Austin Dallas Houston Central CST CDT",
+  },
+  "America/Denver": {
+    city: "Denver",
+    aliases: "Salt Lake City Mountain MST MDT",
+  },
+  "America/Phoenix": {
+    city: "Phoenix",
+    aliases: "Arizona MST",
+  },
+  "America/Toronto": {
+    city: "Toronto",
+    aliases: "Montreal Ottawa Canada Eastern EST EDT",
+  },
+  "America/Vancouver": {
+    city: "Vancouver",
+    aliases: "Canada Pacific PST PDT",
+  },
+  "America/Sao_Paulo": {
+    city: "São Paulo",
+    aliases: "Sao Paulo Brazil Rio BRT",
+  },
+  "Europe/London": {
+    city: "London",
+    aliases: "LDN UK Britain United Kingdom GMT BST",
+  },
+  "Europe/Berlin": {
+    city: "Berlin",
+    aliases: "BER Germany Frankfurt Munich CET CEST",
+  },
+  "Europe/Paris": {
+    city: "Paris",
+    aliases: "France CET CEST",
+  },
+  "Europe/Amsterdam": {
+    city: "Amsterdam",
+    aliases: "Netherlands CET CEST",
+  },
+  "Europe/Zurich": {
+    city: "Zurich",
+    aliases: "Switzerland Geneva CET CEST",
+  },
+  "Europe/Madrid": {
+    city: "Madrid",
+    aliases: "Spain Barcelona CET CEST",
+  },
+  "Europe/Rome": {
+    city: "Rome",
+    aliases: "Italy Milan CET CEST",
+  },
+  "Europe/Athens": {
+    city: "Athens",
+    aliases: "Greece EET EEST",
+  },
+  "Europe/Istanbul": {
+    city: "Istanbul",
+    aliases: "Turkey TRT",
+  },
+  "Asia/Dubai": {
+    city: "Dubai",
+    aliases: "UAE Abu Dhabi GST",
+  },
+  "Asia/Kolkata": {
+    city: "Mumbai / Kolkata",
+    aliases: "India Bangalore Bengaluru Delhi New Delhi Kolkata IST",
+  },
+  "Asia/Singapore": {
+    city: "Singapore",
+    aliases: "SG SGT",
+  },
+  "Asia/Hong_Kong": {
+    city: "Hong Kong",
+    aliases: "HK HKT",
+  },
+  "Asia/Shanghai": {
+    city: "Shanghai / Beijing",
+    aliases: "China Shenzhen CST",
+  },
+  "Asia/Tokyo": {
+    city: "Tokyo",
+    aliases: "TYO Japan Osaka JST",
+  },
+  "Asia/Seoul": {
+    city: "Seoul",
+    aliases: "Korea South Korea KST",
+  },
+  "Australia/Sydney": {
+    city: "Sydney",
+    aliases: "Australia Canberra AEST AEDT",
+  },
+  "Pacific/Auckland": {
+    city: "Auckland",
+    aliases: "New Zealand NZ NZST NZDT",
+  },
+};
+
+const POPULAR_TIMEZONE_IDS = [
+  "America/Los_Angeles",
+  "America/Denver",
+  "America/Chicago",
+  "America/New_York",
+  "America/Sao_Paulo",
+  "UTC",
+  "Europe/London",
+  "Europe/Berlin",
+  "Europe/Paris",
+  "Europe/Athens",
+  "Asia/Dubai",
+  "Asia/Kolkata",
+  "Asia/Singapore",
+  "Asia/Tokyo",
+  "Australia/Sydney",
+  "Pacific/Auckland",
+];
+
+let cachedSupportedTimezones: string[] | null = null;
+
+export function getSupportedTimezones(): string[] {
+  if (cachedSupportedTimezones) return cachedSupportedTimezones;
+  let runtimeZones: string[] = [];
+  try {
+    if (
+      typeof Intl !== "undefined" &&
+      typeof Intl.supportedValuesOf === "function"
+    ) {
+      runtimeZones = Intl.supportedValuesOf("timeZone");
+    }
+  } catch {}
+  const merged = new Set<string>(["UTC", ...POPULAR_TIMEZONE_IDS, ...runtimeZones, ...FALLBACK_IANA_TIMEZONES]);
+  cachedSupportedTimezones = Array.from(merged);
+  return cachedSupportedTimezones;
+}
+
+export function getBrowserTimezone(fallback = "America/New_York"): string {
+  try {
+    if (typeof Intl !== "undefined") {
+      const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      if (detected && isValidTimezone(detected)) {
+        return detected;
+      }
+    }
+  } catch {}
+  return fallback;
+}
+
+export function isValidTimezone(tzId: string): boolean {
+  if (!tzId) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tzId });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const tzInfoCache = new Map<string, TimezoneOption>();
+
+function deriveShortCode(
+  tzId: string,
+  offsetMinutes: number,
+  intlShortName: string
+): string {
+  if (tzId === "UTC" || tzId === "Etc/UTC" || tzId === "Etc/GMT") return "UTC";
+  if (tzId === "Europe/London" || tzId === "Europe/Dublin") {
+    return offsetMinutes === 60 ? "BST" : "GMT";
+  }
+  if (
+    tzId === "Europe/Berlin" ||
+    tzId === "Europe/Paris" ||
+    tzId === "Europe/Madrid" ||
+    tzId === "Europe/Rome" ||
+    tzId === "Europe/Amsterdam" ||
+    tzId === "Europe/Brussels" ||
+    tzId === "Europe/Zurich" ||
+    tzId === "Europe/Vienna" ||
+    tzId === "Europe/Stockholm" ||
+    tzId === "Europe/Oslo" ||
+    tzId === "Europe/Copenhagen" ||
+    tzId === "Europe/Warsaw" ||
+    tzId === "Europe/Prague"
+  ) {
+    return offsetMinutes === 120 ? "CEST" : "CET";
+  }
+  if (
+    tzId === "Europe/Athens" ||
+    tzId === "Europe/Helsinki" ||
+    tzId === "Europe/Bucharest" ||
+    tzId === "Europe/Sofia" ||
+    tzId === "Europe/Kyiv"
+  ) {
+    return offsetMinutes === 180 ? "EEST" : "EET";
+  }
+  if (tzId === "Asia/Tokyo") return "JST";
+  if (tzId === "Asia/Seoul") return "KST";
+  if (tzId === "Asia/Kolkata" || tzId === "Asia/Calcutta") return "IST";
+  if (tzId === "Asia/Singapore") return "SGT";
+  if (tzId === "Asia/Hong_Kong") return "HKT";
+  if (tzId === "Asia/Shanghai" || tzId === "Asia/Taipei") return "CST";
+  if (tzId === "Asia/Dubai") return "GST";
+  if (tzId === "Australia/Sydney" || tzId === "Australia/Melbourne") {
+    return offsetMinutes === 660 ? "AEDT" : "AEST";
+  }
+  if (tzId === "Pacific/Auckland") {
+    return offsetMinutes === 780 ? "NZDT" : "NZST";
+  }
+  if (intlShortName && !intlShortName.startsWith("GMT")) {
+    return intlShortName;
+  }
+  if (offsetMinutes === 0) return "UTC";
+  const sign = offsetMinutes > 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  const h = Math.floor(abs / 60);
+  const m = abs % 60;
+  return m === 0
+    ? `UTC${sign}${h}`
+    : `UTC${sign}${h}:${String(m).padStart(2, "0")}`;
+}
+
+export function getTimezoneInfo(
+  tzId: string,
+  referenceDateIso?: string
+): TimezoneOption {
+  const safeTz = isValidTimezone(tzId) ? tzId : "America/New_York";
+  const dateKey =
+    referenceDateIso && /^\d{4}-\d{2}-\d{2}$/.test(referenceDateIso)
+      ? referenceDateIso
+      : "2026-10-27";
+  const cacheKey = `${safeTz}__${dateKey}`;
+  const cached = tzInfoCache.get(cacheKey);
+  if (cached) return cached;
+
+  const [y, m, d] = dateKey.split("-").map(Number);
+  const utcMidday = Date.UTC(y || 2026, (m || 10) - 1, d || 27, 12, 0, 0);
+  const sampleDate = new Date(utcMidday);
+
+  let offsetMinutes = -240;
+  let intlShort = "EDT";
+
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: safeTz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+      timeZoneName: "short",
+    }).formatToParts(sampleDate);
+
+    const map: Record<string, string> = {};
+    for (const p of parts) {
+      map[p.type] = p.value;
+    }
+    const tzY = Number(map.year);
+    const tzM = Number(map.month);
+    const tzD = Number(map.day);
+    const tzH = Number(map.hour) === 24 ? 0 : Number(map.hour);
+    const tzMin = Number(map.minute);
+    const tzUtcMs = Date.UTC(tzY, tzM - 1, tzD, tzH, tzMin, 0);
+    offsetMinutes = Math.round((tzUtcMs - utcMidday) / 60000);
+    if (map.timeZoneName) {
+      intlShort = map.timeZoneName;
+    }
+  } catch {}
+
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absMins = Math.abs(offsetMinutes);
+  const offHours = Math.floor(absMins / 60);
+  const offRem = absMins % 60;
+  const utcLabel =
+    offsetMinutes === 0
+      ? "UTC+0"
+      : offRem === 0
+        ? `UTC${sign}${offHours}`
+        : `UTC${sign}${offHours}:${String(offRem).padStart(2, "0")}`;
+
+  const override = CITY_DISPLAY_OVERRIDES[safeTz];
+  const segments = safeTz.split("/");
+  const region = segments.length > 1 ? segments[0].replace(/_/g, " ") : "Global";
+  const rawCity =
+    override?.city ||
+    segments[segments.length - 1]?.replace(/_/g, " ") ||
+    safeTz;
+  const shortCode = deriveShortCode(safeTz, offsetMinutes, intlShort);
+  const label = `${rawCity} (${shortCode} · ${utcLabel})`;
+  const searchKeywords = [
+    safeTz.replace(/_/g, " "),
+    safeTz,
+    rawCity,
+    region,
+    shortCode,
+    utcLabel,
+    override?.aliases || "",
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  const info: TimezoneOption = {
+    id: safeTz,
+    label,
+    shortCode,
+    city: rawCity,
+    region,
+    offsetMinutes,
+    offsetHoursFromEDT: (offsetMinutes - -240) / 60,
+    utcLabel,
+    searchKeywords,
+  };
+
+  tzInfoCache.set(cacheKey, info);
+  return info;
+}
+
+export function getAllTimezoneOptions(
+  referenceDateIso?: string
+): TimezoneOption[] {
+  const zones = getSupportedTimezones();
+  return zones.map((id) => getTimezoneInfo(id, referenceDateIso));
+}
+
+export function searchTimezones(
+  query: string,
+  referenceDateIso?: string,
+  currentTimezoneId?: string,
+  limit = 50
+): TimezoneOption[] {
+  const trimmed = query.trim().toLowerCase();
+  const all = getAllTimezoneOptions(referenceDateIso);
+
+  if (!trimmed) {
+    const popularSet = new Set(POPULAR_TIMEZONE_IDS);
+    const prioritized: TimezoneOption[] = [];
+    if (currentTimezoneId) {
+      const current = getTimezoneInfo(currentTimezoneId, referenceDateIso);
+      prioritized.push(current);
+    }
+    for (const id of POPULAR_TIMEZONE_IDS) {
+      if (id !== currentTimezoneId) {
+        prioritized.push(getTimezoneInfo(id, referenceDateIso));
+      }
+    }
+    for (const opt of all) {
+      if (prioritized.length >= limit) break;
+      if (opt.id !== currentTimezoneId && !popularSet.has(opt.id)) {
+        prioritized.push(opt);
+      }
+    }
+    return prioritized.slice(0, limit);
+  }
+
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  const scored: Array<{ opt: TimezoneOption; score: number }> = [];
+
+  for (const opt of all) {
+    const matchesAll = tokens.every((tok) => opt.searchKeywords.includes(tok));
+    if (!matchesAll) continue;
+    let score = 0;
+    const cityLower = opt.city.toLowerCase();
+    const idLower = opt.id.toLowerCase();
+    const shortLower = opt.shortCode.toLowerCase();
+    if (cityLower === trimmed || shortLower === trimmed || idLower === trimmed) {
+      score += 100;
+    } else if (cityLower.startsWith(trimmed)) {
+      score += 60;
+    } else if (idLower.includes(trimmed)) {
+      score += 40;
+    }
+    if (POPULAR_TIMEZONE_IDS.includes(opt.id)) {
+      score += 15;
+    }
+    scored.push({ opt, score });
+  }
+
+  scored.sort(
+    (a, b) =>
+      b.score - a.score ||
+      a.opt.offsetMinutes - b.opt.offsetMinutes ||
+      a.opt.city.localeCompare(b.opt.city)
+  );
+  return scored.slice(0, limit).map((item) => item.opt);
+}
+
+export const TIMEZONE_OPTIONS: TimezoneOption[] = POPULAR_TIMEZONE_IDS.map((id) =>
+  getTimezoneInfo(id, "2026-10-27")
+);
 
 export interface PollParticipant {
   id: string;
@@ -79,6 +548,8 @@ export interface PollData {
   description: string;
   location?: string;
   pollMode?: PollMode; // "dates_and_hours" (default) | "full_days"
+  scheduleType?: ScheduleType; // "specific_dates" (default) | "days_of_week"
+  recurrenceRule?: RecurrenceRule | null;
   hostName: string;
   hostClerkUserId?: string | null;
   hostTokenHash?: string;
@@ -88,8 +559,8 @@ export interface PollData {
   dayEndHour: number;
   slotMinutes: number;
   /**
-   * For "dates_and_hours": minutes (15, 30, 60, 120, 180)
-   * For "full_days": minutes representing N days (1440 = 1 day, 2880 = 2 days, 4320 = 3 days)
+   * For "dates_and_hours": minutes (e.g. 15, 30, 45, 60, 75, 90, 120, or custom)
+   * For "full_days": minutes representing N days (1440 = 1 day, 2880 = 2 days, etc.)
    */
   durationMinutes: number;
   // Advanced Settings
@@ -141,14 +612,115 @@ export function formatDurationBadge(
   durationMinutes: number,
   pollMode?: PollMode
 ): string {
-  if (pollMode === "full_days" || durationMinutes >= 1440) {
-    const days = Math.max(1, Math.round(durationMinutes / 1440));
-    return days === 1 ? "Full day" : `${days} days`;
+  const safeMins = Math.max(1, Math.round(durationMinutes || 30));
+  if (pollMode === "full_days" || safeMins >= 1440) {
+    if (safeMins % 1440 === 0) {
+      const days = Math.max(1, Math.round(safeMins / 1440));
+      return days === 1 ? "Full day" : `${days} days`;
+    }
+    const days = Math.floor(safeMins / 1440);
+    const remHours = Math.round((safeMins % 1440) / 60);
+    return remHours > 0 ? `${days}d ${remHours}h` : `${days} days`;
   }
-  if (durationMinutes >= 60 && durationMinutes % 60 === 0) {
-    return `${durationMinutes / 60}h`;
+  const hours = Math.floor(safeMins / 60);
+  const mins = safeMins % 60;
+  if (hours > 0 && mins > 0) {
+    return `${hours}h ${mins}m`;
   }
-  return `${durationMinutes}m`;
+  if (hours > 0) {
+    return `${hours}h`;
+  }
+  return `${mins}m`;
+}
+
+export const WEEKDAY_LABELS: Array<{
+  day: number;
+  short: string;
+  mini: string;
+  long: string;
+}> = [
+  { day: 1, short: "Mon", mini: "M", long: "Monday" },
+  { day: 2, short: "Tue", mini: "T", long: "Tuesday" },
+  { day: 3, short: "Wed", mini: "W", long: "Wednesday" },
+  { day: 4, short: "Thu", mini: "T", long: "Thursday" },
+  { day: 5, short: "Fri", mini: "F", long: "Friday" },
+  { day: 6, short: "Sat", mini: "S", long: "Saturday" },
+  { day: 0, short: "Sun", mini: "S", long: "Sunday" },
+];
+
+export function generateRecurringDates(rule: RecurrenceRule): string[] {
+  const weekdaysSet = new Set(
+    Array.isArray(rule.weekdays) && rule.weekdays.length > 0
+      ? rule.weekdays
+      : [1, 2, 3, 4, 5]
+  );
+  const [sy, sm, sd] = (rule.startDate || "").split("-").map(Number);
+  const startUtc =
+    sy && sm && sd
+      ? new Date(Date.UTC(sy, sm - 1, sd))
+      : new Date(
+          Date.UTC(
+            new Date().getUTCFullYear(),
+            new Date().getUTCMonth(),
+            new Date().getUTCDate()
+          )
+        );
+
+  let maxDays = Math.min(26, Math.max(1, Number(rule.weeksCount) || 1)) * 7;
+  if (rule.spanMode === "date_range" && rule.endDate) {
+    const [ey, em, ed] = rule.endDate.split("-").map(Number);
+    if (ey && em && ed) {
+      const endUtc = new Date(Date.UTC(ey, em - 1, ed));
+      const diffDays =
+        Math.floor((endUtc.getTime() - startUtc.getTime()) / 86400000) + 1;
+      maxDays = Math.min(180, Math.max(1, diffDays));
+    }
+  }
+
+  const dates: string[] = [];
+  for (let offset = 0; offset < maxDays; offset++) {
+    const cur = new Date(startUtc);
+    cur.setUTCDate(startUtc.getUTCDate() + offset);
+    if (weekdaysSet.has(cur.getUTCDay())) {
+      dates.push(cur.toISOString().slice(0, 10));
+    }
+  }
+  return dates;
+}
+
+export function formatRecurrenceSummary(
+  rule?: RecurrenceRule | null
+): string | null {
+  if (!rule || !Array.isArray(rule.weekdays) || rule.weekdays.length === 0) {
+    return null;
+  }
+  const ordered = [1, 2, 3, 4, 5, 6, 0].filter((d) =>
+    rule.weekdays.includes(d)
+  );
+  const isMonFri =
+    ordered.length === 5 &&
+    ordered.every((d, idx) => d === [1, 2, 3, 4, 5][idx]);
+  const isWeekend =
+    ordered.length === 2 && ordered[0] === 6 && ordered[1] === 0;
+
+  const daysText = isMonFri
+    ? "Mon–Fri"
+    : isWeekend
+      ? "Sat–Sun"
+      : ordered
+          .map((d) => WEEKDAY_LABELS.find((w) => w.day === d)?.short || "")
+          .filter(Boolean)
+          .join(", ");
+
+  if (rule.spanMode === "date_range" && rule.endDate) {
+    const sHdr = formatDateHeader(rule.startDate);
+    const eHdr = formatDateHeader(rule.endDate);
+    return `Every ${daysText} (${sHdr.monthShort} ${sHdr.dayNum} – ${eHdr.monthShort} ${eHdr.dayNum})`;
+  }
+  const weeks = Math.max(1, rule.weeksCount || 1);
+  return weeks === 1
+    ? `Every ${daysText} · 1 week`
+    : `Every ${daysText} · ${weeks} weeks`;
 }
 
 export function generateDayTimeSlots(
@@ -192,23 +764,22 @@ export function formatMinutesToDisplay(
   minutesFromMidnight: number,
   targetTimezoneId: string = "America/New_York",
   baseTimezoneId: string = "America/New_York",
-  compact: boolean = false
+  compact: boolean = false,
+  referenceDateIso?: string
 ): { timeLabel: string; dayShift: number } {
-  const targetTz =
-    TIMEZONE_OPTIONS.find((t) => t.id === targetTimezoneId) || TIMEZONE_OPTIONS[1];
-  const baseTz =
-    TIMEZONE_OPTIONS.find((t) => t.id === baseTimezoneId) || TIMEZONE_OPTIONS[1];
-  const diffMinutes =
-    (targetTz.offsetHoursFromEDT - baseTz.offsetHoursFromEDT) * 60;
+  const targetTz = getTimezoneInfo(targetTimezoneId, referenceDateIso);
+  const baseTz = getTimezoneInfo(baseTimezoneId, referenceDateIso);
+  const diffMinutes = targetTz.offsetMinutes - baseTz.offsetMinutes;
 
-  let shifted = minutesFromMidnight + diffMinutes;
+  let shifted = Math.round(minutesFromMidnight + diffMinutes);
   let dayShift = 0;
-  if (shifted < 0) {
+  while (shifted < 0) {
     shifted += 24 * 60;
-    dayShift = -1;
-  } else if (shifted >= 24 * 60) {
+    dayShift -= 1;
+  }
+  while (shifted >= 24 * 60) {
     shifted -= 24 * 60;
-    dayShift = 1;
+    dayShift += 1;
   }
 
   const hours24 = Math.floor(shifted / 60);
@@ -352,7 +923,7 @@ export function computeRankedWindows(poll: PollData): RankedWindow[] {
   // MODE B: DATES + HOURS POLL
   const slotsNeeded = Math.max(
     1,
-    Math.round(poll.durationMinutes / poll.slotMinutes)
+    Math.ceil(poll.durationMinutes / poll.slotMinutes)
   );
   const dayTimes = generateDayTimeSlots(
     poll.dayStartHour,

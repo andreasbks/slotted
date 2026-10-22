@@ -13,11 +13,11 @@ import {
 import {
   PollData,
   RankedWindow,
-  TIMEZONE_OPTIONS,
   formatDateHeader,
   formatDurationBadge,
   formatMinutesToDisplay,
   generateIcsContent,
+  getTimezoneInfo,
 } from "@/lib/slotted-data";
 
 interface ArcEaselTicketProps {
@@ -56,8 +56,7 @@ export function ArcEaselTicket({
     viewerTimezone,
     poll.timezone
   );
-  const tzOption =
-    TIMEZONE_OPTIONS.find((t) => t.id === viewerTimezone) || TIMEZONE_OPTIONS[1];
+  const tzOption = getTimezoneInfo(viewerTimezone, lockedWindow.date);
 
   const handleCopyInviteLink = () => {
     const url =

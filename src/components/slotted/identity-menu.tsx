@@ -1,12 +1,13 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { KeyRound, UserRound } from "lucide-react";
 import Link from "next/link";
 import { Avatar } from "./avatar";
 
 export function IdentityMenu({ name }: { name: string }) {
   const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [status, setStatus] = useState("");
   const clerkConfigured = Boolean(
@@ -47,14 +48,31 @@ export function IdentityMenu({ name }: { name: string }) {
     }
   };
 
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
   return (
-    <div className="relative">
+    <div className="relative" ref={rootRef}>
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
+        aria-haspopup="menu"
         aria-label={`Open identity menu for ${name || "Guest"}`}
-        className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-white/20 bg-black/30 px-2.5 text-sm text-white"
+        className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-white/20 bg-black/30 px-2.5 text-sm text-white"
       >
         <Avatar seed="current-device" name={name || "Guest"} size={24} />
         <span className="hidden sm:inline">{name || "Guest"}</span>
@@ -65,21 +83,21 @@ export function IdentityMenu({ name }: { name: string }) {
           <p className="mt-1 text-xs text-[#6F6C65]">Saved on this device</p>
           <div className="mt-4 grid gap-2">
             {clerkConfigured && (
-              <Link href="/sign-in" className="min-h-11 rounded-lg bg-[#171715] px-3 py-3 text-center text-sm font-semibold text-white">
+              <Link href="/sign-in" className="min-h-11 cursor-pointer rounded-lg bg-[#171715] px-3 py-3 text-center text-sm font-semibold text-white">
                 Save with Google or Apple
               </Link>
             )}
             <button
               type="button"
               onClick={() => void issueRecovery()}
-              className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-[#DDDAD1] px-3 text-sm"
+              className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-[#DDDAD1] px-3 text-sm"
             >
               <KeyRound className="h-4 w-4" /> Save a recovery key
             </button>
             <button
               type="button"
               onClick={() => void restoreRecovery()}
-              className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-[#DDDAD1] px-3 text-sm"
+              className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-lg border border-[#DDDAD1] px-3 text-sm"
             >
               <UserRound className="h-4 w-4" /> Use a recovery key
             </button>

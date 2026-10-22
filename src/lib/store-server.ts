@@ -1,23 +1,55 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
+import { INITIAL_POLLS, PollData } from "@/lib/slotted-data";
+import { resolveStoreKind } from "./store-mode";
+import { hashSecret, isHostTokenValid, verifyPassword } from "./poll-crypto";
 import {
-  AvailabilityState,
-  INITIAL_POLLS,
-  PollData,
-  PollMode,
-  VisibilityMode,
-} from "@/lib/slotted-data";
+  CreatePollInput,
+  LockInput,
+  VoteInput,
+  applyLockState,
+  assembleNewPoll,
+  mutateParticipantVote,
+  sanitizePollForClient,
+} from "./poll-record";
+import { advanceRateLimit } from "./rate-limit";
+import {
+  neonClaimDeviceIdentity,
+  neonClearRateLimit,
+  neonConsumeRateLimit,
+  neonDeletePollBySlug,
+  neonGetPollBySlug,
+  neonGetPollForViewer,
+  neonHasValidAccessGrant,
+  neonInsertPoll,
+  neonIssueAccessGrant,
+  neonIssueRecoveryKey,
+  neonListAllPolls,
+  neonListPollsForViewer,
+  neonRedeemRecoveryKey,
+  neonRequireHost,
+  neonRotateDeviceIdentity,
+  neonUpdatePollLockState,
+  neonUpsertParticipantVote,
+  neonVerifyPollPassword,
+} from "./neon-store";
+
+export { hashSecret, isHostTokenValid };
+export type { CreatePollInput };
 
 const LOCAL_DB_DIR = path.join(process.cwd(), ".data");
 const LOCAL_DB_FILE = path.join(LOCAL_DB_DIR, "slotted-db.json");
 
-export function hashSecret(raw: string): string {
-  const pepper = process.env.SLOTTED_TOKEN_PEPPER || "slotted-local-development";
-  return crypto
-    .createHmac("sha256", pepper)
-    .update(`slotted:v1:${raw}`)
-    .digest("hex");
+let persistenceLogged = false;
+
+function storeKind() {
+  const kind = resolveStoreKind();
+  if (!persistenceLogged) {
+    persistenceLogged = true;
+    console.info(`[slotted] persistence=${kind}`);
+  }
+  return kind;
 }
 
 interface LocalDbFileShape {
@@ -33,6 +65,11 @@ interface LocalDbFileShape {
     deviceHash: string;
     createdAt: string;
     usedAt?: string;
+  }>;
+  rateLimits?: Array<{
+    key: string;
+    attempts: number;
+    windowStartedAt: string;
   }>;
 }
 
@@ -73,36 +110,14 @@ function writeLocalDb(data: LocalDbFileShape): void {
   fs.renameSync(temp, LOCAL_DB_FILE);
 }
 
-function sanitizePollForClient(
-  poll: PollData,
-  deviceHash?: string,
-  canManagePoll = false
-): PollData {
-  const rest = { ...poll };
-  delete rest.accessPassword;
-  delete rest.hostTokenHash;
-  return {
-    ...rest,
-    hasPassword: Boolean(poll.accessPassword || poll.hasPassword),
-    canManagePoll,
-    viewerParticipantId:
-      poll.participants.find((participant) => participant.guestSessionId === deviceHash)
-        ?.id || null,
-    participants: poll.participants.map((participant) => ({
-      ...participant,
-      guestSessionId: "",
-      clerkUserId: undefined,
-      isCurrentUser: participant.guestSessionId === deviceHash,
-    })),
-  };
-}
-
 export async function listAllPolls(): Promise<PollData[]> {
+  if (storeKind() === "neon") return neonListAllPolls();
   const local = readLocalDb();
   return local.polls.map((poll) => sanitizePollForClient(poll));
 }
 
 export async function getPollBySlug(slug: string): Promise<PollData | null> {
+  if (storeKind() === "neon") return neonGetPollBySlug(slug);
   const local = readLocalDb();
   const found = local.polls.find((p) => p.slug === slug);
   return found ? sanitizePollForClient(found) : null;
@@ -113,24 +128,22 @@ export async function getPollForViewer(
   deviceHash?: string,
   hostToken?: string
 ): Promise<PollData | null> {
+  if (storeKind() === "neon") return neonGetPollForViewer(slug, deviceHash, hostToken);
   const local = readLocalDb();
   const found = local.polls.find((poll) => poll.slug === slug);
   if (!found) return null;
-  const canManage = Boolean(
-    hostToken &&
-      found.hostTokenHash &&
-      crypto.timingSafeEqual(
-        Buffer.from(found.hostTokenHash),
-        Buffer.from(hashSecret(hostToken))
-      )
+  return sanitizePollForClient(
+    found,
+    deviceHash,
+    isHostTokenValid(found, hostToken)
   );
-  return sanitizePollForClient(found, deviceHash, canManage);
 }
 
 export async function listPollsForViewer(
   deviceHash?: string,
   hostTokens: Record<string, string> = {}
 ): Promise<PollData[]> {
+  if (storeKind() === "neon") return neonListPollsForViewer(deviceHash, hostTokens);
   if (!deviceHash && Object.keys(hostTokens).length === 0) return [];
   const local = readLocalDb();
   return local.polls
@@ -138,192 +151,55 @@ export async function listPollsForViewer(
       const isParticipant = poll.participants.some(
         (participant) => participant.guestSessionId === deviceHash
       );
-      const hostToken = hostTokens[poll.slug];
-      return (
-        isParticipant ||
-        Boolean(hostToken && poll.hostTokenHash === hashSecret(hostToken))
-      );
+      return isParticipant || isHostTokenValid(poll, hostTokens[poll.slug]);
     })
     .map((poll) =>
       sanitizePollForClient(
         poll,
         deviceHash,
-        Boolean(
-          hostTokens[poll.slug] &&
-            poll.hostTokenHash === hashSecret(hostTokens[poll.slug])
-        )
+        isHostTokenValid(poll, hostTokens[poll.slug])
       )
     );
-}
-
-export interface CreatePollInput {
-  title: string;
-  description?: string;
-  location?: string;
-  pollMode?: PollMode;
-  hostName?: string;
-  hostClerkUserId?: string | null;
-  deviceHash: string;
-  timezone: string;
-  candidateDates: string[];
-  dayStartHour: number;
-  dayEndHour: number;
-  slotMinutes?: number;
-  durationMinutes: number;
-  accessPassword?: string | null;
-  visibilityMode?: VisibilityMode;
-  allowIfNeeded?: boolean;
-  deadlineAt?: string | null;
 }
 
 export async function createNewPoll(
   input: CreatePollInput
 ): Promise<{ poll: PollData; hostToken: string }> {
-  const id = `pol_${crypto.randomUUID()}`;
-  const slugBase = (input.title || "poll")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 28);
-  const slug = `${slugBase || "poll"}-${crypto.randomBytes(5).toString("hex")}`;
-  const hostToken = crypto.randomBytes(32).toString("base64url");
-  const hostTokenHash = hashSecret(hostToken);
-  const passwordClean = input.accessPassword?.trim() || null;
-  const passwordHash = passwordClean ? hashPassword(passwordClean) : null;
-  const pollMode: PollMode =
-    input.pollMode === "full_days" ? "full_days" : "dates_and_hours";
-
-  const newPoll: PollData = {
-    id,
-    slug,
-    title: input.title.trim() || "Untitled Poll",
-    description: input.description?.trim() || "",
-    location: input.location?.trim() || "",
-    pollMode,
-    hostName: input.hostName?.trim() || "Organizer",
-    hostClerkUserId: input.hostClerkUserId || null,
-    hostTokenHash,
-    timezone: input.timezone || "America/New_York",
-    candidateDates:
-      input.candidateDates.length > 0
-        ? input.candidateDates
-        : ["2026-10-27", "2026-10-28", "2026-10-29"],
-    dayStartHour: input.dayStartHour ?? 9,
-    dayEndHour: Math.max((input.dayStartHour ?? 9) + 2, input.dayEndHour ?? 17),
-    slotMinutes: input.slotMinutes ?? 30,
-    durationMinutes: input.durationMinutes ?? 30,
-    hasPassword: Boolean(passwordClean),
-    accessPassword: passwordHash,
-    visibilityMode: input.visibilityMode || "public",
-    allowIfNeeded: input.allowIfNeeded ?? true,
-    deadlineAt: input.deadlineAt || null,
-    status: "OPEN",
-    lockedLocation: input.location?.trim() || "",
-    createdAt: new Date().toISOString(),
-    participants: [
-      {
-        id: `p_${Date.now().toString(36)}`,
-        guestSessionId: input.deviceHash,
-        clerkUserId: input.hostClerkUserId || null,
-        name: input.hostName?.trim() || "Alex",
-        city: "NYC",
-        timezone: input.timezone || "America/New_York",
-        avatarColor: "#10B981",
-        isCurrentUser: true,
-        slots: {},
-      },
-    ],
-  };
-
+  const assembled = assembleNewPoll(input);
+  if (storeKind() === "neon") return neonInsertPoll(assembled);
   const local = readLocalDb();
-  local.polls.unshift(newPoll);
+  local.polls.unshift(assembled.poll);
   writeLocalDb(local);
-
   return {
-    poll: sanitizePollForClient(newPoll, input.deviceHash, true),
-    hostToken,
+    poll: sanitizePollForClient(assembled.poll, input.deviceHash, true),
+    hostToken: assembled.hostToken,
   };
 }
 
 export async function upsertParticipantVote(
   slug: string,
-  payload: {
-    deviceHash: string;
-    name: string;
-    timezone: string;
-    city?: string;
-    slots: Record<string, AvailabilityState>;
-  }
+  payload: VoteInput
 ): Promise<PollData | null> {
+  if (storeKind() === "neon") return neonUpsertParticipantVote(slug, payload);
   const local = readLocalDb();
   const pollIdx = local.polls.findIndex((p) => p.slug === slug);
   if (pollIdx === -1) return null;
-
   const poll = local.polls[pollIdx];
-  if (poll.status !== "OPEN") {
-    throw new Error("This poll is locked");
-  }
-  if (poll.deadlineAt && Date.now() >= new Date(poll.deadlineAt).getTime()) {
-    throw new Error("The response window has closed");
-  }
-  const existingIdx = poll.participants.findIndex(
-    (p) => p.guestSessionId === payload.deviceHash
-  );
-
-  const colors = ["#10B981", "#141413", "#2563EB", "#D97706", "#7C3AED"];
-  if (existingIdx >= 0) {
-    poll.participants[existingIdx] = {
-      ...poll.participants[existingIdx],
-      name: payload.name.trim() || poll.participants[existingIdx].name,
-      timezone: payload.timezone || poll.participants[existingIdx].timezone,
-      city: payload.city || poll.participants[existingIdx].city,
-      slots: payload.slots,
-    };
-  } else {
-    poll.participants.push({
-      id: `p_${crypto.randomUUID()}`,
-      guestSessionId: payload.deviceHash,
-      name: payload.name.trim() || "Guest",
-      city: payload.city || "NYC",
-      timezone: payload.timezone || poll.timezone,
-      avatarColor: colors[poll.participants.length % colors.length],
-      slots: payload.slots,
-    });
-  }
-
+  mutateParticipantVote(poll, payload);
   writeLocalDb(local);
   return sanitizePollForClient(poll, payload.deviceHash);
 }
 
 export async function updatePollLockState(
   slug: string,
-  payload: {
-    status: "OPEN" | "LOCKED";
-    lockedSlotStart?: string;
-    lockedSlotEnd?: string;
-    lockedLocation?: string;
-    durationMinutes?: number;
-  }
+  payload: LockInput
 ): Promise<PollData | null> {
+  if (storeKind() === "neon") return neonUpdatePollLockState(slug, payload);
   const local = readLocalDb();
   const pollIdx = local.polls.findIndex((p) => p.slug === slug);
   if (pollIdx === -1) return null;
-
   const poll = local.polls[pollIdx];
-  poll.status = payload.status;
-  if (payload.lockedSlotStart !== undefined) {
-    poll.lockedSlotStart = payload.lockedSlotStart;
-  }
-  if (payload.lockedSlotEnd !== undefined) {
-    poll.lockedSlotEnd = payload.lockedSlotEnd;
-  }
-  if (payload.lockedLocation !== undefined) {
-    poll.lockedLocation = payload.lockedLocation;
-  }
-  if (payload.durationMinutes !== undefined) {
-    poll.durationMinutes = payload.durationMinutes;
-  }
-
+  applyLockState(poll, payload);
   writeLocalDb(local);
   return sanitizePollForClient(poll);
 }
@@ -332,6 +208,7 @@ export async function verifyPollPassword(
   slug: string,
   passwordAttempt: string
 ): Promise<boolean> {
+  if (storeKind() === "neon") return neonVerifyPollPassword(slug, passwordAttempt);
   const local = readLocalDb();
   const poll = local.polls.find((p) => p.slug === slug);
   if (!poll) return false;
@@ -343,6 +220,7 @@ export async function deletePollBySlug(
   slug: string,
   hostToken: string
 ): Promise<boolean> {
+  if (storeKind() === "neon") return neonDeletePollBySlug(slug, hostToken);
   const local = readLocalDb();
   const poll = local.polls.find((item) => item.slug === slug);
   if (!poll || !isHostTokenValid(poll, hostToken)) return false;
@@ -352,38 +230,11 @@ export async function deletePollBySlug(
   return true;
 }
 
-function hashPassword(password: string): string {
-  const salt = crypto.randomBytes(16);
-  const derived = crypto.scryptSync(password, salt, 32);
-  return `scrypt$${salt.toString("base64url")}$${derived.toString("base64url")}`;
-}
-
-function verifyPassword(password: string, stored: string): boolean {
-  if (!stored.startsWith("scrypt$")) {
-    const legacy = crypto.createHash("sha256").update(password).digest("hex");
-    return crypto.timingSafeEqual(Buffer.from(legacy), Buffer.from(stored));
-  }
-  const [, saltRaw, digestRaw] = stored.split("$");
-  const expected = Buffer.from(digestRaw, "base64url");
-  const actual = crypto.scryptSync(
-    password,
-    Buffer.from(saltRaw, "base64url"),
-    expected.length
-  );
-  return crypto.timingSafeEqual(expected, actual);
-}
-
-export function isHostTokenValid(poll: PollData, hostToken?: string): boolean {
-  if (!hostToken || !poll.hostTokenHash) return false;
-  const expected = Buffer.from(poll.hostTokenHash);
-  const actual = Buffer.from(hashSecret(hostToken));
-  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
-}
-
 export async function requireHost(
   slug: string,
   hostToken?: string
 ): Promise<boolean> {
+  if (storeKind() === "neon") return neonRequireHost(slug, hostToken);
   const local = readLocalDb();
   const poll = local.polls.find((item) => item.slug === slug);
   return Boolean(poll && isHostTokenValid(poll, hostToken));
@@ -392,6 +243,7 @@ export async function requireHost(
 export async function issueAccessGrant(
   slug: string
 ): Promise<{ token: string; expiresAt: Date }> {
+  if (storeKind() === "neon") return neonIssueAccessGrant(slug);
   const local = readLocalDb();
   const token = crypto.randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000);
@@ -411,6 +263,7 @@ export async function hasValidAccessGrant(
   slug: string,
   token?: string
 ): Promise<boolean> {
+  if (storeKind() === "neon") return neonHasValidAccessGrant(slug, token);
   if (!token) return false;
   const local = readLocalDb();
   const digest = hashSecret(token);
@@ -427,6 +280,7 @@ export async function hasValidAccessGrant(
 export async function issueRecoveryKey(
   deviceHash: string
 ): Promise<string> {
+  if (storeKind() === "neon") return neonIssueRecoveryKey(deviceHash);
   const local = readLocalDb();
   const selector = crypto.randomBytes(8).toString("hex").toUpperCase();
   const verifier = crypto.randomBytes(16).toString("base64url").toUpperCase();
@@ -446,6 +300,7 @@ export async function issueRecoveryKey(
 export async function redeemRecoveryKey(
   key: string
 ): Promise<string | null> {
+  if (storeKind() === "neon") return neonRedeemRecoveryKey(key);
   const normalized = key.trim().toUpperCase();
   const [, selector, verifier] = normalized.split("-");
   if (!selector || !verifier) return null;
@@ -471,6 +326,7 @@ export async function rotateDeviceIdentity(
   previousHash: string,
   nextHash: string
 ): Promise<void> {
+  if (storeKind() === "neon") return neonRotateDeviceIdentity(previousHash, nextHash);
   const local = readLocalDb();
   for (const poll of local.polls) {
     for (const participant of poll.participants) {
@@ -491,6 +347,7 @@ export async function claimDeviceIdentity(
   guestHash: string,
   accountHash: string
 ): Promise<void> {
+  if (storeKind() === "neon") return neonClaimDeviceIdentity(guestHash, accountHash);
   const local = readLocalDb();
   for (const poll of local.polls) {
     const guest = poll.participants.find(
@@ -517,5 +374,48 @@ export async function claimDeviceIdentity(
       credential.usedAt = new Date().toISOString();
     }
   }
+  writeLocalDb(local);
+}
+
+export async function consumeRateLimit(
+  key: string,
+  limit: number,
+  windowMs: number
+): Promise<{ allowed: boolean; retryAfterSeconds: number }> {
+  if (storeKind() === "neon") return neonConsumeRateLimit(key, limit, windowMs);
+  const local = readLocalDb();
+  const buckets = local.rateLimits || [];
+  const index = buckets.findIndex((bucket) => bucket.key === key);
+  const current = index >= 0 ? buckets[index] : null;
+  const decision = advanceRateLimit(
+    current
+      ? {
+          attempts: current.attempts,
+          windowStartedAtMs: Date.parse(current.windowStartedAt),
+        }
+      : null,
+    Date.now(),
+    windowMs,
+    limit
+  );
+  const record = {
+    key,
+    attempts: decision.attempts,
+    windowStartedAt: new Date(decision.windowStartedAtMs).toISOString(),
+  };
+  if (index >= 0) buckets[index] = record;
+  else buckets.push(record);
+  local.rateLimits = buckets;
+  writeLocalDb(local);
+  return {
+    allowed: decision.allowed,
+    retryAfterSeconds: decision.retryAfterSeconds,
+  };
+}
+
+export async function clearRateLimit(key: string): Promise<void> {
+  if (storeKind() === "neon") return neonClearRateLimit(key);
+  const local = readLocalDb();
+  local.rateLimits = (local.rateLimits || []).filter((bucket) => bucket.key !== key);
   writeLocalDb(local);
 }

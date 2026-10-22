@@ -6,13 +6,13 @@ import {
   secureCookie,
 } from "@/lib/auth-server";
 import {
+  consumeRateLimit,
   hashSecret,
   issueRecoveryKey,
   redeemRecoveryKey,
   rotateDeviceIdentity,
 } from "@/lib/store-server";
-
-const recoveryAttempts = new Map<string, { count: number; resetAt: number }>();
+import { RECOVERY_ATTEMPT_LIMIT, RECOVERY_WINDOW_MS } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
   try {
@@ -32,18 +32,20 @@ export async function POST(request: Request) {
 
     const source =
       request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
-    const now = Date.now();
-    const current = recoveryAttempts.get(source);
-    if (current && current.resetAt > now && current.count >= 20) {
+    const limitKey = `recovery:${source}`;
+    const limit = await consumeRateLimit(
+      limitKey,
+      RECOVERY_ATTEMPT_LIMIT,
+      RECOVERY_WINDOW_MS
+    );
+    if (!limit.allowed) {
       return NextResponse.json(
         { error: "Try again later." },
-        { status: 429, headers: { "Retry-After": "3600" } }
+        {
+          status: 429,
+          headers: { "Retry-After": String(limit.retryAfterSeconds) },
+        }
       );
-    }
-    if (!current || current.resetAt <= now) {
-      recoveryAttempts.set(source, { count: 1, resetAt: now + 60 * 60 * 1000 });
-    } else {
-      current.count += 1;
     }
     const previousHash = await redeemRecoveryKey(String(body.key || ""));
     if (!previousHash) {

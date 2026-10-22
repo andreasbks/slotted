@@ -6,8 +6,14 @@ import {
   timestamp,
   jsonb,
   uniqueIndex,
+  index,
 } from "drizzle-orm/pg-core";
-import type { AvailabilityState, PollMode } from "@/lib/slotted-data";
+import type {
+  AvailabilityState,
+  PollMode,
+  RecurrenceRule,
+  ScheduleType,
+} from "@/lib/slotted-data";
 
 export const polls = pgTable("polls", {
   id: text("id").primaryKey(),
@@ -19,6 +25,13 @@ export const polls = pgTable("polls", {
     .$type<PollMode>()
     .notNull()
     .default("dates_and_hours"),
+  scheduleType: text("schedule_type")
+    .$type<ScheduleType>()
+    .notNull()
+    .default("specific_dates"),
+  recurrenceRule: jsonb("recurrence_rule")
+    .$type<RecurrenceRule | null>()
+    .default(null),
   hostClerkUserId: text("host_clerk_user_id"),
   hostTokenHash: text("host_token_hash").notNull(),
   hostName: text("host_name").notNull().default("Host"),
@@ -70,3 +83,45 @@ export const pollParticipants = pgTable(
     ),
   })
 );
+
+export const accessGrants = pgTable(
+  "access_grants",
+  {
+    id: text("id").primaryKey(),
+    slug: text("slug")
+      .notNull()
+      .references(() => polls.slug, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => ({
+    slugTokenIdx: uniqueIndex("access_grant_slug_token_idx").on(
+      table.slug,
+      table.tokenHash
+    ),
+    slugIdx: index("access_grant_slug_idx").on(table.slug),
+  })
+);
+
+export const recoveryCredentials = pgTable(
+  "recovery_credentials",
+  {
+    id: text("id").primaryKey(),
+    selector: text("selector").notNull().unique(),
+    verifierHash: text("verifier_hash").notNull(),
+    deviceHash: text("device_hash").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+  },
+  (table) => ({
+    deviceIdx: index("recovery_device_idx").on(table.deviceHash),
+  })
+);
+
+export const rateLimitBuckets = pgTable("rate_limit_buckets", {
+  bucketKey: text("bucket_key").primaryKey(),
+  attempts: integer("attempts").notNull().default(0),
+  windowStartedAt: timestamp("window_started_at", { withTimezone: true }).notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
