@@ -94,6 +94,7 @@ export interface PollData {
   durationMinutes: number;
   // Advanced Settings
   hasPassword?: boolean;
+  requiresPassword?: boolean;
   accessPassword?: string | null;
   visibilityMode: VisibilityMode;
   allowIfNeeded: boolean;
@@ -105,6 +106,8 @@ export interface PollData {
   lockedLocation?: string;
   createdAt?: string;
   participants: PollParticipant[];
+  viewerParticipantId?: string | null;
+  canManagePoll?: boolean;
 }
 
 export interface RankedWindow {
@@ -132,9 +135,6 @@ export interface RankedWindow {
 
 export const STORAGE_KEY_POLLS = "slotted_mlp_polls_v2";
 export const STORAGE_KEY_GUEST = "slotted_mlp_guest_v2";
-export const STORAGE_KEY_SESSION_ID = "slotted_mlp_session_v2";
-export const STORAGE_KEY_HOST_TOKENS = "slotted_mlp_host_tokens_v2";
-export const STORAGE_KEY_UNLOCKED_SLUGS = "slotted_mlp_unlocked_v2";
 export const STORAGE_KEY_TZ = "slotted_mlp_tz_v2";
 
 export function formatDurationBadge(
@@ -149,20 +149,6 @@ export function formatDurationBadge(
     return `${durationMinutes / 60}h`;
   }
   return `${durationMinutes}m`;
-}
-
-export function getOrCreateGuestSessionId(): string {
-  if (typeof window === "undefined") return "slt_guest_local";
-  try {
-    let existing = localStorage.getItem(STORAGE_KEY_SESSION_ID);
-    if (!existing) {
-      existing = `slt_guest_${Math.random().toString(36).slice(2, 10)}`;
-      localStorage.setItem(STORAGE_KEY_SESSION_ID, existing);
-    }
-    return existing;
-  } catch {
-    return "slt_guest_local";
-  }
 }
 
 export function generateDayTimeSlots(
@@ -874,8 +860,13 @@ export function generateIcsContent(
     const ny = nextDay.getUTCFullYear();
     const nm = String(nextDay.getUTCMonth() + 1).padStart(2, "0");
     const nd = String(nextDay.getUTCDate()).padStart(2, "0");
-    const attendees = poll.participants.map((p) => p.name).join(", ");
-    return [
+    const attendees = [
+      ...window.availableParticipants,
+      ...window.ifNeededParticipants,
+    ]
+      .map((p) => p.name)
+      .join(", ");
+    const lines = [
       "BEGIN:VCALENDAR",
       "VERSION:2.0",
       "PRODID:-//slotted//EN",
@@ -887,11 +878,13 @@ export function generateIcsContent(
       `DTSTART;VALUE=DATE:${y}${m}${d}`,
       `DTEND;VALUE=DATE:${ny}${nm}${nd}`,
       `DESCRIPTION:${poll.description}\\n\\nConfirmed (${window.totalAttendingCount}/${window.totalParticipants}: ${attendees})`,
-      `LOCATION:${poll.lockedLocation || poll.location || "All-day event"}`,
       "STATUS:CONFIRMED",
       "END:VEVENT",
       "END:VCALENDAR",
-    ].join("\r\n");
+    ];
+    const location = poll.lockedLocation || poll.location;
+    if (location) lines.splice(lines.indexOf("STATUS:CONFIRMED"), 0, `LOCATION:${location}`);
+    return lines.join("\r\n");
   }
 
   const startHh = String(Math.floor(window.startTimeMinutes / 60)).padStart(
@@ -905,9 +898,14 @@ export function generateIcsContent(
   const dtStart = `${y}${m}${d}T${startHh}${startMm}00`;
   const dtEnd = `${y}${m}${d}T${endHh}${endMm}00`;
 
-  const attendees = poll.participants.map((p) => p.name).join(", ");
+  const attendees = [
+    ...window.availableParticipants,
+    ...window.ifNeededParticipants,
+  ]
+    .map((p) => p.name)
+    .join(", ");
 
-  return [
+  const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
     "PRODID:-//slotted//EN",
@@ -919,9 +917,11 @@ export function generateIcsContent(
     `DTSTART;TZID=${poll.timezone}:${dtStart}`,
     `DTEND;TZID=${poll.timezone}:${dtEnd}`,
     `DESCRIPTION:${poll.description}\\n\\nConfirmed (${window.totalAttendingCount}/${window.totalParticipants}: ${attendees})`,
-    `LOCATION:${poll.lockedLocation || poll.location || "Video call"}`,
     "STATUS:CONFIRMED",
     "END:VEVENT",
     "END:VCALENDAR",
-  ].join("\r\n");
+  ];
+  const location = poll.lockedLocation || poll.location;
+  if (location) lines.splice(lines.indexOf("STATUS:CONFIRMED"), 0, `LOCATION:${location}`);
+  return lines.join("\r\n");
 }

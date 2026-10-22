@@ -25,6 +25,7 @@ interface ArcEaselTicketProps {
   lockedWindow: RankedWindow;
   viewerTimezone: string;
   onUnlock: () => void;
+  canManage: boolean;
 }
 
 export function ArcEaselTicket({
@@ -32,6 +33,7 @@ export function ArcEaselTicket({
   lockedWindow,
   viewerTimezone,
   onUnlock,
+  canManage,
 }: ArcEaselTicketProps) {
   const [copiedShare, setCopiedShare] = useState(false);
   const [downloadedIcs, setDownloadedIcs] = useState(false);
@@ -86,6 +88,13 @@ export function ArcEaselTicket({
 
   const googleCalendarUrl = (() => {
     const [y, m, d] = lockedWindow.date.split("-");
+    let datesParam: string;
+    if (isFullDays) {
+      const endIso = lockedWindow.endDate || lockedWindow.date;
+      const end = new Date(`${endIso}T00:00:00Z`);
+      end.setUTCDate(end.getUTCDate() + 1);
+      datesParam = `${y}${m}${d}/${end.toISOString().slice(0, 10).replaceAll("-", "")}`;
+    } else {
     const sH = String(Math.floor(lockedWindow.startTimeMinutes / 60)).padStart(
       2,
       "0"
@@ -96,15 +105,17 @@ export function ArcEaselTicket({
       "0"
     );
     const eM = String(lockedWindow.endTimeMinutes % 60).padStart(2, "0");
-    const datesParam = `${y}${m}${d}T${sH}${sM}00/${y}${m}${d}T${eH}${eM}00`;
+      datesParam = `${y}${m}${d}T${sH}${sM}00/${y}${m}${d}T${eH}${eM}00`;
+    }
     const params = new URLSearchParams({
       action: "TEMPLATE",
       text: poll.title,
       dates: datesParam,
       details: `${poll.description || poll.title} (${lockedWindow.totalAttendingCount}/${lockedWindow.totalParticipants} attending)`,
-      location: poll.lockedLocation || poll.location || "Video call",
       ctz: poll.timezone,
     });
+    const location = poll.lockedLocation || poll.location;
+    if (location) params.set("location", location);
     return `https://calendar.google.com/calendar/render?${params.toString()}`;
   })();
 
@@ -131,14 +142,14 @@ export function ArcEaselTicket({
             </span>
           </div>
 
-          <button
+          {canManage && <button
             type="button"
             onClick={onUnlock}
             className="inline-flex items-center gap-1.5 rounded-xl border border-[#E4E2DA] bg-white px-3.5 py-1.5 font-mono text-xs font-medium text-[#575550] hover:border-[#141413] hover:text-[#141413] transition cursor-pointer"
           >
             <Unlock className="h-3.5 w-3.5" />
             Reopen poll
-          </button>
+          </button>}
         </div>
 
         {/* Main Content */}
@@ -186,7 +197,16 @@ export function ArcEaselTicket({
               Attendees ({poll.participants.length})
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
-              {poll.participants.map((p) => {
+              {poll.participants
+                .filter((participant) =>
+                  lockedWindow.availableParticipants.some(
+                    (available) => available.id === participant.id
+                  ) ||
+                  lockedWindow.ifNeededParticipants.some(
+                    (flex) => flex.id === participant.id
+                  )
+                )
+                .map((p) => {
                 const localStart = formatMinutesToDisplay(
                   lockedWindow.startTimeMinutes,
                   p.timezone,

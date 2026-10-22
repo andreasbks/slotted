@@ -16,7 +16,6 @@ import {
   KeyRound,
   Lock,
   Star,
-  UserPlus,
   Users,
   X,
 } from "lucide-react";
@@ -24,19 +23,19 @@ import {
   AvailabilityState,
   BrushMode,
   PollData,
+  PollParticipant,
   RankedWindow,
-  STORAGE_KEY_UNLOCKED_SLUGS,
   TIMEZONE_OPTIONS,
   computeRankedWindows,
   formatDateHeader,
   formatDurationBadge,
   formatMinutesToDisplay,
   generateDayTimeSlots,
-  getOrCreateGuestSessionId,
   makeSlotKey,
   parseSlotKey,
 } from "@/lib/slotted-data";
 import { ArcEaselTicket } from "./arc-easel-ticket";
+import { Avatar } from "./avatar";
 
 interface PollWorkspaceProps {
   poll: PollData;
@@ -48,6 +47,7 @@ interface PollWorkspaceProps {
   activeBrush: BrushMode;
   onChangeBrush: (brush: BrushMode) => void;
   justCreated?: boolean;
+  onReloadPoll: () => Promise<void>;
 }
 
 export function PollWorkspace({
@@ -60,6 +60,7 @@ export function PollWorkspace({
   activeBrush,
   onChangeBrush,
   justCreated = false,
+  onReloadPoll,
 }: PollWorkspaceProps) {
   const [isolatedParticipantId, setIsolatedParticipantId] = useState<
     string | null
@@ -70,27 +71,13 @@ export function PollWorkspace({
   const [showCreatedBanner, setShowCreatedBanner] = useState(justCreated);
 
   // Password gate state
-  const [passwordUnlocked, setPasswordUnlocked] = useState<boolean>(() => {
-    if (!poll.hasPassword) return true;
-    if (justCreated) return true;
-    if (typeof window !== "undefined") {
-      try {
-        const raw = localStorage.getItem(STORAGE_KEY_UNLOCKED_SLUGS);
-        if (raw) {
-          const arr = JSON.parse(raw) as string[];
-          if (Array.isArray(arr) && arr.includes(poll.slug)) return true;
-        }
-      } catch {}
-    }
-    return false;
-  });
   const [passwordAttempt, setPasswordAttempt] = useState("");
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [verifyingPassword, setVerifyingPassword] = useState(false);
-
-  // Add second participant inline helper
-  const [addingResponder, setAddingResponder] = useState(false);
-  const [newResponderName, setNewResponderName] = useState("");
+  const [saveState, setSaveState] = useState<
+    "idle" | "saving" | "saved" | "error"
+  >("idle");
+  const [focusedCellKey, setFocusedCellKey] = useState<string | null>(null);
 
   // Mobile states
   const [mobileDayIdx, setMobileDayIdx] = useState(0);
@@ -110,41 +97,41 @@ export function PollWorkspace({
 
   useEffect(() => {
     if (justCreated) {
-      setShowCreatedBanner(true);
-      setCopiedLink(true);
-      setPasswordUnlocked(true);
       const url =
         typeof window !== "undefined"
           ? `${window.location.origin}/p/${poll.slug}`
           : `https://slotted.app/p/${poll.slug}`;
       if (typeof navigator !== "undefined" && navigator.clipboard) {
-        navigator.clipboard.writeText(url).catch(() => {});
+        navigator.clipboard
+          .writeText(url)
+          .then(() => setCopiedLink(true))
+          .catch(() => setCopiedLink(false));
       }
     }
   }, [justCreated, poll.slug]);
-
-  useEffect(() => {
-    if (!poll.hasPassword) {
-      setPasswordUnlocked(true);
-    }
-  }, [poll.hasPassword]);
-
-  useEffect(() => {
-    if (mobileDayIdx >= poll.candidateDates.length) {
-      setMobileDayIdx(0);
-    }
-  }, [poll.candidateDates.length, mobileDayIdx]);
 
   const rankedWindows = useMemo(() => computeRankedWindows(poll), [poll]);
   const bestWindow: RankedWindow | undefined = rankedWindows[0];
 
   const activeRankedWindow = useMemo(() => {
+    if (poll.status === "LOCKED" && poll.lockedSlotStart) {
+      const locked = rankedWindows.find(
+        (window) => window.startSlotKey === poll.lockedSlotStart
+      );
+      if (locked) return locked;
+    }
     if (selectedWindowId) {
       const found = rankedWindows.find((w) => w.id === selectedWindowId);
       if (found) return found;
     }
     return bestWindow;
-  }, [rankedWindows, selectedWindowId, bestWindow]);
+  }, [
+    poll.status,
+    poll.lockedSlotStart,
+    rankedWindows,
+    selectedWindowId,
+    bestWindow,
+  ]);
 
   const dayTimes = useMemo(
     () =>
@@ -157,11 +144,28 @@ export function PollWorkspace({
   );
 
   const currentUserParticipant = useMemo(() => {
-    return (
-      poll.participants.find((p) => p.isCurrentUser) ||
-      poll.participants[poll.participants.length - 1]
+    const existing = poll.participants.find(
+      (participant) =>
+        participant.id === poll.viewerParticipantId ||
+        participant.isCurrentUser
     );
-  }, [poll.participants]);
+    if (existing) return existing;
+    return {
+      id: "viewer-new",
+      guestSessionId: "",
+      name: guestName,
+      city: "",
+      timezone: viewerTimezone,
+      avatarColor: "#0F766E",
+      isCurrentUser: true,
+      slots: {},
+    } satisfies PollParticipant;
+  }, [
+    poll.participants,
+    poll.viewerParticipantId,
+    guestName,
+    viewerTimezone,
+  ]);
 
   const currentUserHasVoted = useMemo(() => {
     return Object.keys(currentUserParticipant?.slots || {}).length > 0;
@@ -169,12 +173,11 @@ export function PollWorkspace({
 
   const hideGroupResponses =
     (poll.visibilityMode === "hidden_until_voted" && !currentUserHasVoted) ||
-    poll.visibilityMode === "host_only";
+    (poll.visibilityMode === "host_only" && !poll.canManagePoll);
 
   // Sync slots to backend API and optimistic local state
   const applySlotsToCurrentUser = useCallback(
-    (slotKeys: string[], mode: BrushMode) => {
-      if (!currentUserParticipant) return;
+    async (slotKeys: string[], mode: BrushMode) => {
       const nextSlots = { ...currentUserParticipant.slots };
       for (const k of slotKeys) {
         if (mode === "clear") {
@@ -184,7 +187,10 @@ export function PollWorkspace({
         }
       }
 
-      const updatedParticipants = poll.participants.map((p) =>
+      let foundViewer = false;
+      const updatedParticipants = poll.participants.map((p) => {
+        if (p.id === currentUserParticipant.id) foundViewer = true;
+        return (
         p.id === currentUserParticipant.id
           ? {
               ...p,
@@ -192,7 +198,15 @@ export function PollWorkspace({
               slots: nextSlots,
             }
           : p
-      );
+        );
+      });
+      if (!foundViewer) {
+        updatedParticipants.push({
+          ...currentUserParticipant,
+          name: guestName.trim(),
+          slots: nextSlots,
+        });
+      }
 
       const optimisticPoll: PollData = {
         ...poll,
@@ -201,18 +215,24 @@ export function PollWorkspace({
       onUpdatePoll(optimisticPoll);
 
       // Persist asynchronously to API
-      const sessionId =
-        currentUserParticipant.guestSessionId || getOrCreateGuestSessionId();
-      fetch(`/api/polls/${poll.slug}/vote`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          guestSessionId: sessionId,
-          name: guestName || currentUserParticipant.name,
-          timezone: viewerTimezone,
-          slots: nextSlots,
-        }),
-      }).catch(() => {});
+      setSaveState("saving");
+      try {
+        const response = await fetch(`/api/polls/${poll.slug}/vote`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: guestName || currentUserParticipant.name,
+            timezone: viewerTimezone,
+            slots: nextSlots,
+          }),
+        });
+        if (!response.ok) throw new Error("save failed");
+        const data = await response.json();
+        onUpdatePoll(data.poll as PollData);
+        setSaveState("saved");
+      } catch {
+        setSaveState("error");
+      }
     },
     [currentUserParticipant, guestName, onUpdatePoll, poll, viewerTimezone]
   );
@@ -253,7 +273,7 @@ export function PollWorkspace({
       }
       return keys;
     },
-    [poll.candidateDates, dayTimes]
+    [poll.candidateDates, poll.pollMode, dayTimes]
   );
 
   const previewSlotKeys = useMemo(() => {
@@ -317,7 +337,8 @@ export function PollWorkspace({
 
   const handleCellPointerDown = (
     slotKey: string,
-    e: React.PointerEvent<HTMLElement>
+    e: React.PointerEvent<HTMLElement>,
+    forceActiveBrush = false
   ) => {
     if (e.button !== 0 && e.pointerType === "mouse") return;
     const currentVal = currentUserParticipant?.slots[slotKey];
@@ -325,10 +346,15 @@ export function PollWorkspace({
     let effectiveBrush: BrushMode = activeBrush;
     if (e.shiftKey && poll.allowIfNeeded !== false) {
       effectiveBrush = "if_needed";
-    } else if (activeBrush !== "clear" && currentVal === activeBrush) {
+    } else if (
+      !forceActiveBrush &&
+      activeBrush !== "clear" &&
+      currentVal === activeBrush
+    ) {
       effectiveBrush = "clear";
     }
 
+    e.currentTarget.setPointerCapture?.(e.pointerId);
     setDragBrushUsed(effectiveBrush);
     setDragStartSlot(slotKey);
     setDragCurrentSlot(slotKey);
@@ -366,41 +392,64 @@ export function PollWorkspace({
     }
   };
 
-  const handleLockSlot = (windowToLock?: RankedWindow) => {
+  const handleLockSlot = async (windowToLock?: RankedWindow) => {
     const target = windowToLock || activeRankedWindow;
     if (!target) return;
-    const updated: PollData = {
-      ...poll,
-      status: "LOCKED",
-      lockedSlotStart: target.startSlotKey,
-      lockedSlotEnd: target.endSlotKey,
-    };
-    onUpdatePoll(updated);
-    setMobileDrawerOpen(false);
-
-    fetch(`/api/polls/${poll.slug}/lock`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        status: "LOCKED",
-        lockedSlotStart: target.startSlotKey,
-        lockedSlotEnd: target.endSlotKey,
-      }),
-    }).catch(() => {});
+    const date = formatDateHeader(target.date).fullLabel;
+    const time =
+      poll.pollMode === "full_days"
+        ? "All day"
+        : `${
+            formatMinutesToDisplay(
+              target.startTimeMinutes,
+              viewerTimezone,
+              poll.timezone,
+              true
+            ).timeLabel
+          }–${
+            formatMinutesToDisplay(
+              target.endTimeMinutes,
+              viewerTimezone,
+              poll.timezone,
+              true
+            ).timeLabel
+          }`;
+    if (
+      !window.confirm(
+        `Lock ${date} · ${time} for ${target.totalAttendingCount} attending?`
+      )
+    ) {
+      return;
+    }
+    try {
+      const response = await fetch(`/api/polls/${poll.slug}/lock`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: "LOCKED",
+          lockedSlotStart: target.startSlotKey,
+          lockedSlotEnd: target.endSlotKey,
+        }),
+      });
+      if (!response.ok) throw new Error();
+      const data = await response.json();
+      onUpdatePoll(data.poll as PollData);
+      setMobileDrawerOpen(false);
+    } catch {
+      window.alert("Couldn’t lock the time. The poll is still open.");
+    }
   };
 
-  const handleUnlockPoll = () => {
-    const updated: PollData = {
-      ...poll,
-      status: "OPEN",
-    };
-    onUpdatePoll(updated);
-
-    fetch(`/api/polls/${poll.slug}/lock`, {
+  const handleUnlockPoll = async () => {
+    const response = await fetch(`/api/polls/${poll.slug}/lock`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status: "OPEN" }),
-    }).catch(() => {});
+    });
+    if (response.ok) {
+      const data = await response.json();
+      onUpdatePoll(data.poll as PollData);
+    }
   };
 
   const handleDurationChange = (newDuration: number) => {
@@ -419,47 +468,21 @@ export function PollWorkspace({
     }).catch(() => {});
   };
 
-  const handleCopyShareLink = () => {
+  const handleCopyShareLink = async () => {
     const url =
       typeof window !== "undefined"
         ? `${window.location.origin}/p/${poll.slug}`
         : `https://slotted.app/p/${poll.slug}`;
     if (typeof navigator !== "undefined" && navigator.clipboard) {
-      navigator.clipboard.writeText(url).catch(() => {});
+      try {
+        await navigator.clipboard.writeText(url);
+        setCopiedLink(true);
+        setTimeout(() => setCopiedLink(false), 2200);
+        return;
+      } catch {}
     }
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2200);
-  };
-
-  const handleSwitchOrAddResponder = (e: React.FormEvent) => {
-    e.preventDefault();
-    const clean = newResponderName.trim();
-    if (!clean) return;
-    onChangeGuestName(clean);
-    const newSessionId = `slt_guest_${clean.toLowerCase().replace(/[^a-z0-9]/g, "")}_${Date.now().toString(36)}`;
-    const colors = ["#10B981", "#2563EB", "#D97706", "#7C3AED", "#141413"];
-
-    const nextParticipants = poll.participants.map((p) => ({
-      ...p,
-      isCurrentUser: false,
-    }));
-    nextParticipants.push({
-      id: `p_${Date.now().toString(36)}`,
-      guestSessionId: newSessionId,
-      name: clean,
-      city: "NYC",
-      timezone: viewerTimezone,
-      avatarColor: colors[nextParticipants.length % colors.length],
-      isCurrentUser: true,
-      slots: {},
-    });
-
-    onUpdatePoll({
-      ...poll,
-      participants: nextParticipants,
-    });
-    setNewResponderName("");
-    setAddingResponder(false);
+    window.prompt("Copy the link below.", url);
+    setCopiedLink(false);
   };
 
   const handleVerifyPassword = async (e: React.FormEvent) => {
@@ -474,18 +497,7 @@ export function PollWorkspace({
       });
       const data = await res.json();
       if (res.ok && data.valid) {
-        setPasswordUnlocked(true);
-        try {
-          const raw = localStorage.getItem(STORAGE_KEY_UNLOCKED_SLUGS);
-          const arr = raw ? (JSON.parse(raw) as string[]) : [];
-          if (!arr.includes(poll.slug)) {
-            arr.push(poll.slug);
-            localStorage.setItem(
-              STORAGE_KEY_UNLOCKED_SLUGS,
-              JSON.stringify(arr)
-            );
-          }
-        } catch {}
+        await onReloadPoll();
       } else {
         setPasswordError(data.error || "Incorrect password");
       }
@@ -608,16 +620,68 @@ export function PollWorkspace({
     };
   };
 
+  const focusGridCell = (slotKey: string) => {
+    setFocusedCellKey(slotKey);
+    requestAnimationFrame(() => {
+      const cells = gridRef.current?.querySelectorAll<HTMLElement>(
+        "[data-grid-cell='true']"
+      );
+      Array.from(cells || [])
+        .find((cell) => cell.dataset.slotKey === slotKey)
+        ?.focus();
+    });
+  };
+
+  const handleGridCellKeyDown = (
+    event: React.KeyboardEvent<HTMLElement>,
+    dateIndex: number,
+    rowIndex: number,
+    slotKey: string
+  ) => {
+    let nextDate = dateIndex;
+    let nextRow = rowIndex;
+    if (event.key === "ArrowLeft") nextDate -= 1;
+    else if (event.key === "ArrowRight") nextDate += 1;
+    else if (event.key === "ArrowUp") nextRow -= 1;
+    else if (event.key === "ArrowDown") nextRow += 1;
+    else if (event.key === "Home") nextDate = 0;
+    else if (event.key === "End") nextDate = poll.candidateDates.length - 1;
+    else if (event.key === "PageUp") nextRow = 0;
+    else if (event.key === "PageDown") nextRow = dayTimes.length - 1;
+    else if (event.key === "Delete" || event.key === "Backspace") {
+      event.preventDefault();
+      void applySlotsToCurrentUser([slotKey], "clear");
+      return;
+    } else if (event.key === " " || event.key === "Enter") {
+      event.preventDefault();
+      void applySlotsToCurrentUser(
+        [slotKey],
+        event.shiftKey && poll.allowIfNeeded !== false
+          ? "if_needed"
+          : activeBrush
+      );
+      return;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    nextDate = Math.max(0, Math.min(poll.candidateDates.length - 1, nextDate));
+    nextRow = Math.max(0, Math.min(dayTimes.length - 1, nextRow));
+    focusGridCell(
+      makeSlotKey(poll.candidateDates[nextDate], dayTimes[nextRow])
+    );
+  };
+
   /* =========================================================
      PASSWORD PROTECTION GATE (Matching Rounded-[24px] Modal)
      ========================================================= */
-  if (poll.hasPassword && !passwordUnlocked) {
+  if (poll.requiresPassword) {
     return (
       <div className="mx-auto flex min-h-[65dvh] max-w-md items-center justify-center px-4">
         <motion.div
-          initial={{ opacity: 0, y: 10, scale: 0.98 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          className="w-full overflow-hidden rounded-[24px] border border-[#E4E2DA] bg-white shadow-sm"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="w-full overflow-hidden rounded-2xl border border-[#DDDAD1] bg-white shadow-sm"
         >
           <div className="p-6 sm:p-7 space-y-4">
             <div className="inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-[#FAF9F6] border border-[#E4E2DA] text-[#141413]">
@@ -628,31 +692,33 @@ export function PollWorkspace({
                 {poll.title}
               </h1>
               <p className="mt-1 text-xs font-mono text-[#575550]">
-                This poll is password protected. Enter the password to view and vote.
+                Enter the password to join this poll.
               </p>
             </div>
 
             <form onSubmit={handleVerifyPassword} className="space-y-3 pt-1">
               <input
                 type="password"
-                aria-label="Poll password"
+                aria-label="Password"
                 value={passwordAttempt}
                 onChange={(e) => setPasswordAttempt(e.target.value)}
-                placeholder="Enter password..."
+                placeholder="Password"
                 className="w-full rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] px-3.5 py-2.5 font-mono text-sm text-[#141413] placeholder:text-[#8A8780] focus:border-[#141413] focus:bg-white focus:outline-none"
                 autoFocus
               />
+              <div className="min-h-5" aria-live="polite">
               {passwordError && (
-                <p className="font-mono text-xs text-rose-600">
+                <p role="alert" className="text-xs text-rose-700">
                   {passwordError}
                 </p>
               )}
+              </div>
               <button
                 type="submit"
                 disabled={verifyingPassword}
                 className="w-full rounded-xl bg-[#141413] py-2.5 font-mono text-xs font-semibold text-[#F6F5F2] hover:bg-emerald-700 transition cursor-pointer"
               >
-                {verifyingPassword ? "Verifying..." : "Unlock poll"}
+                {verifyingPassword ? "Verifying…" : "Open poll"}
               </button>
             </form>
           </div>
@@ -750,23 +816,14 @@ export function PollWorkspace({
       {/* =========================================================
           COHESIVE ROUNDED-[24PX] POLL HEADER CARD
          ========================================================= */}
-      <div className="rounded-[24px] border border-[#E4E2DA] bg-white p-5 sm:p-6">
+      {poll.status === "OPEN" && (
+      <div className="rounded-2xl border border-[#DDDAD1] bg-white p-4 sm:p-6">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-2.5">
-              <span
-                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-wider ${
-                  poll.status === "LOCKED"
-                    ? "bg-emerald-600 text-white"
-                    : "bg-[#141413] text-[#F6F5F2]"
-                }`}
-              >
-                <span
-                  className={`h-1.5 w-1.5 rounded-full ${
-                    poll.status === "LOCKED" ? "bg-white" : "bg-emerald-400"
-                  }`}
-                />
-                {poll.status}
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-[#171715] px-3 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-wider text-[#F6F5F2]">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                Open
               </span>
 
               <h1 className="text-xl sm:text-2xl font-semibold tracking-tight text-[#141413]">
@@ -806,7 +863,7 @@ export function PollWorkspace({
 
           {/* Right Controls: Duration, Timezone & Share Link */}
           <div className="flex flex-wrap items-center gap-2">
-            {poll.pollMode === "full_days" ? (
+            {poll.canManagePoll && (poll.pollMode === "full_days" ? (
               <div className="inline-flex items-center rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] p-1 font-mono text-xs tabular-nums">
                 {[
                   { mins: 1440, label: "1d" },
@@ -849,7 +906,7 @@ export function PollWorkspace({
                   </button>
                 ))}
               </div>
-            )}
+            ))}
 
             <div className="relative inline-flex items-center">
               <Globe className="pointer-events-none absolute left-3 h-3.5 w-3.5 text-[#575550]" />
@@ -887,6 +944,7 @@ export function PollWorkspace({
           </div>
         </div>
       </div>
+      )}
 
       {/* =========================================================
           MAIN WORKSPACE: EITHER LOCKED CARD OR TWO-COLUMN AVAILABILITY LAYOUT
@@ -897,6 +955,7 @@ export function PollWorkspace({
           lockedWindow={activeRankedWindow}
           viewerTimezone={viewerTimezone}
           onUnlock={handleUnlockPoll}
+          canManage={Boolean(poll.canManagePoll)}
         />
       ) : (
         <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 lg:items-start">
@@ -917,6 +976,21 @@ export function PollWorkspace({
                   placeholder="Alex"
                   className="w-32 rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] px-3 py-1.5 font-mono text-xs font-semibold text-[#141413] focus:border-[#141413] focus:bg-white focus:outline-none"
                 />
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className={`text-xs ${
+                    saveState === "error" ? "text-rose-700" : "text-[#6F6C65]"
+                  }`}
+                >
+                  {saveState === "saving"
+                    ? "Saving…"
+                    : saveState === "saved"
+                      ? "Saved"
+                      : saveState === "error"
+                        ? "Not saved yet"
+                        : ""}
+                </span>
               </div>
 
               {/* Right: Brush Mode Pills */}
@@ -924,6 +998,7 @@ export function PollWorkspace({
                 <button
                   type="button"
                   onClick={() => onChangeBrush("available")}
+                  aria-pressed={activeBrush === "available"}
                   className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 font-mono text-xs font-medium transition cursor-pointer ${
                     activeBrush === "available"
                       ? "bg-emerald-600 text-white"
@@ -944,6 +1019,7 @@ export function PollWorkspace({
                   <button
                     type="button"
                     onClick={() => onChangeBrush("if_needed")}
+                    aria-pressed={activeBrush === "if_needed"}
                     className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 font-mono text-xs font-medium transition cursor-pointer ${
                       activeBrush === "if_needed"
                         ? "bg-amber-500 text-[#141413] font-semibold"
@@ -958,6 +1034,7 @@ export function PollWorkspace({
                 <button
                   type="button"
                   onClick={() => onChangeBrush("clear")}
+                  aria-pressed={activeBrush === "clear"}
                   className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 font-mono text-xs font-medium transition cursor-pointer ${
                     activeBrush === "clear"
                       ? "bg-[#141413] text-white"
@@ -1191,12 +1268,18 @@ export function PollWorkspace({
                           </button>
 
                           <div
-                            role="slider"
-                            aria-label={`Paint rail for ${disp.timeLabel}`}
-                            aria-valuenow={metrics.totalAttending}
+                            role="button"
+                            tabIndex={0}
+                            aria-label={`Paint from ${disp.timeLabel} with ${
+                              activeBrush === "available"
+                                ? "Available"
+                                : activeBrush === "if_needed"
+                                  ? "If needed"
+                                  : "Erase"
+                            }`}
                             style={{ touchAction: "none" }}
                             onPointerDown={(e) =>
-                              handleCellPointerDown(slotKey, e)
+                              handleCellPointerDown(slotKey, e, true)
                             }
                             onPointerEnter={(e) =>
                               handleCellPointerEnter(slotKey, e)
@@ -1225,6 +1308,8 @@ export function PollWorkspace({
             {/* Desktop & Multi-Column Availability Grid */}
             <div
               ref={gridRef}
+              role="grid"
+              aria-label="Availability"
               className={`${
                 mobileViewMode === "1day" ? "hidden md:block" : "block"
               } relative select-none overflow-hidden rounded-2xl border border-[#E4E2DA] bg-white`}
@@ -1308,7 +1393,7 @@ export function PollWorkspace({
                         </span>
                       </div>
 
-                      {poll.candidateDates.map((dateStr) => {
+                      {poll.candidateDates.map((dateStr, dateIdx) => {
                         const slotKey = makeSlotKey(dateStr, timeStr);
                         const metrics = getCellMetrics(slotKey);
                         const ratio =
@@ -1348,21 +1433,30 @@ export function PollWorkspace({
                           <div
                             key={slotKey}
                             data-slot-key={slotKey}
-                            role="button"
-                            tabIndex={rowIdx === 0 ? 0 : -1}
-                            aria-label={`${dateStr} ${disp.timeLabel}`}
+                            data-grid-cell="true"
+                            role="gridcell"
+                            tabIndex={
+                              focusedCellKey === slotKey ||
+                              (!focusedCellKey && rowIdx === 0 && dateIdx === 0)
+                                ? 0
+                                : -1
+                            }
+                            aria-label={`${formatDateHeader(dateStr).fullLabel}, ${disp.timeLabel}. ${metrics.userState === "available" ? "Available for you" : metrics.userState === "if_needed" ? "If needed for you" : "Not selected"}.`}
+                            onFocus={() => setFocusedCellKey(slotKey)}
                             onPointerDown={(e) =>
                               handleCellPointerDown(slotKey, e)
                             }
                             onPointerEnter={(e) =>
                               handleCellPointerEnter(slotKey, e)
                             }
-                            onKeyDown={(e) => {
-                              if (e.key === " " || e.key === "Enter") {
-                                e.preventDefault();
-                                handleMobileRowTap(slotKey);
-                              }
-                            }}
+                            onKeyDown={(e) =>
+                              handleGridCellKeyDown(
+                                e,
+                                dateIdx,
+                                rowIdx,
+                                slotKey
+                              )
+                            }
                             style={bgStyle}
                             className={`group relative flex h-9 items-center justify-between border-r last:border-r-0 border-[#E4E2DA] px-2 cursor-pointer ${
                               metrics.ifNeededCount > 0 && !isolatedParticipant
@@ -1419,7 +1513,7 @@ export function PollWorkspace({
                                 </span>
                               )}
 
-                              <button
+                              {!hideGroupResponses && <button
                                 type="button"
                                 onPointerDown={(e) => e.stopPropagation()}
                                 onClick={(e) => {
@@ -1432,7 +1526,7 @@ export function PollWorkspace({
                                 title="Inspect local times"
                               >
                                 <Info className="h-3 w-3" />
-                              </button>
+                              </button>}
                             </div>
                           </div>
                         );
@@ -1596,7 +1690,7 @@ export function PollWorkspace({
                           {statusNote}
                         </p>
 
-                        {isSelected && (
+                        {isSelected && poll.canManagePoll && (
                           <div className="mt-3 flex items-center justify-end border-t border-[#E4E2DA] pt-2.5">
                             <button
                               type="button"
@@ -1635,39 +1729,8 @@ export function PollWorkspace({
                       Show all
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => setAddingResponder((prev) => !prev)}
-                    className="inline-flex items-center gap-1 rounded-lg border border-[#E4E2DA] bg-[#FAF9F6] px-2 py-1 font-mono text-[10px] font-medium text-[#141413] hover:bg-[#EFECE6] cursor-pointer"
-                    title="Add another person's response"
-                  >
-                    <UserPlus className="h-3 w-3" />
-                    Add person
-                  </button>
                 </div>
               </div>
-
-              {addingResponder && (
-                <form
-                  onSubmit={handleSwitchOrAddResponder}
-                  className="mt-3 flex items-center gap-1.5"
-                >
-                  <input
-                    type="text"
-                    value={newResponderName}
-                    onChange={(e) => setNewResponderName(e.target.value)}
-                    placeholder="New responder name..."
-                    className="flex-1 rounded-xl border border-[#E4E2DA] bg-[#FAF9F6] px-3 py-1.5 font-mono text-xs text-[#141413] focus:border-[#141413] focus:bg-white focus:outline-none"
-                    autoFocus
-                  />
-                  <button
-                    type="submit"
-                    className="rounded-xl bg-[#141413] px-3 py-1.5 font-mono text-xs font-semibold text-white cursor-pointer"
-                  >
-                    Switch
-                  </button>
-                </form>
-              )}
 
               <div className="mt-3 space-y-1.5">
                 {poll.participants.map((p) => {
@@ -1692,10 +1755,7 @@ export function PollWorkspace({
                       }`}
                     >
                       <div className="flex items-center gap-2 truncate">
-                        <span
-                          className="h-2.5 w-2.5 rounded-full shrink-0"
-                          style={{ backgroundColor: p.avatarColor }}
-                        />
+                        <Avatar seed={p.id} name={p.name} />
                         <span className="font-medium text-[#141413]">
                           {p.isCurrentUser ? guestName || p.name : p.name}
                         </span>
@@ -1717,7 +1777,10 @@ export function PollWorkspace({
       )}
 
       {/* Mobile Bottom Bar (< 768px) */}
-      {poll.status === "OPEN" && activeRankedWindow && !hideGroupResponses && (
+      {poll.status === "OPEN" &&
+        poll.canManagePoll &&
+        activeRankedWindow &&
+        !hideGroupResponses && (
         <div className="md:hidden sticky bottom-2 z-30 mt-3">
           <button
             type="button"

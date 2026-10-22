@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -26,7 +27,6 @@ import {
   PollData,
   PollMode,
   STORAGE_KEY_GUEST,
-  STORAGE_KEY_HOST_TOKENS,
   STORAGE_KEY_POLLS,
   STORAGE_KEY_TZ,
   TIMEZONE_OPTIONS,
@@ -35,26 +35,44 @@ import {
   formatDateHeader,
   formatDurationBadge,
   formatMinutesToDisplay,
-  getOrCreateGuestSessionId,
 } from "@/lib/slotted-data";
 import { PollWorkspace } from "./poll-workspace";
+import { IdentityMenu } from "./identity-menu";
 
-const CALENDAR_GRID_DAYS = [
-  { iso: "2026-10-26", day: "Mon", num: "26", month: "Oct", weekend: false },
-  { iso: "2026-10-27", day: "Tue", num: "27", month: "Oct", weekend: false },
-  { iso: "2026-10-28", day: "Wed", num: "28", month: "Oct", weekend: false },
-  { iso: "2026-10-29", day: "Thu", num: "29", month: "Oct", weekend: false },
-  { iso: "2026-10-30", day: "Fri", num: "30", month: "Oct", weekend: true },
-  { iso: "2026-10-31", day: "Sat", num: "31", month: "Oct", weekend: true },
-  { iso: "2026-11-01", day: "Sun", num: "01", month: "Nov", weekend: true },
-  { iso: "2026-11-02", day: "Mon", num: "02", month: "Nov", weekend: false },
-  { iso: "2026-11-03", day: "Tue", num: "03", month: "Nov", weekend: false },
-  { iso: "2026-11-04", day: "Wed", num: "04", month: "Nov", weekend: false },
-  { iso: "2026-11-05", day: "Thu", num: "05", month: "Nov", weekend: false },
-  { iso: "2026-11-06", day: "Fri", num: "06", month: "Nov", weekend: true },
-  { iso: "2026-11-07", day: "Sat", num: "07", month: "Nov", weekend: true },
-  { iso: "2026-11-08", day: "Sun", num: "08", month: "Nov", weekend: true },
-];
+function buildCalendarDays() {
+  const today = new Date();
+  const start = new Date(
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate())
+  );
+  return Array.from({ length: 14 }, (_, index) => {
+    const date = new Date(start);
+    date.setUTCDate(start.getUTCDate() + index);
+    const iso = date.toISOString().slice(0, 10);
+    const weekday = date.getUTCDay();
+    return {
+      iso,
+      day: date.toLocaleDateString("en-US", {
+        weekday: "short",
+        timeZone: "UTC",
+      }),
+      num: String(date.getUTCDate()).padStart(2, "0"),
+      month: date.toLocaleDateString("en-US", {
+        month: "short",
+        timeZone: "UTC",
+      }),
+      weekend: weekday === 0 || weekday === 6,
+    };
+  });
+}
+
+const CALENDAR_GRID_DAYS = buildCalendarDays();
+const DEFAULT_DATES = CALENDAR_GRID_DAYS.slice(1, 4).map((day) => day.iso);
+const WEEKEND_DATES = CALENDAR_GRID_DAYS.filter((day) => day.weekend)
+  .slice(0, 3)
+  .map((day) => day.iso);
+const WEEKDAY_DATES = CALENDAR_GRID_DAYS.filter((day) => !day.weekend)
+  .slice(0, 5)
+  .map((day) => day.iso);
 
 interface SlottedAppShellProps {
   initialSlug?: string;
@@ -67,20 +85,15 @@ interface SlottedAppShellProps {
 export function SlottedAppShell({
   initialSlug,
   initialViewMode = "landing",
-  initialLocked = false,
   initialAdvancedOpen = false,
   initialCreated = false,
 }: SlottedAppShellProps) {
   const router = useRouter();
 
-  const [polls, setPolls] = useState<PollData[]>(() => {
-    if (!initialLocked) return INITIAL_POLLS;
-    return INITIAL_POLLS.map((p, idx) =>
-      (initialSlug ? p.slug === initialSlug : idx === 0)
-        ? { ...p, status: "LOCKED" }
-        : p
-    );
-  });
+  const [polls, setPolls] = useState<PollData[]>([]);
+  const [pollLoadState, setPollLoadState] = useState<
+    "loading" | "ready" | "not-found" | "error"
+  >(initialViewMode === "poll" ? "loading" : "ready");
 
   const [activeSlug, setActiveSlug] = useState<string>(
     initialSlug || INITIAL_POLLS[0].slug
@@ -97,11 +110,8 @@ export function SlottedAppShell({
   // Direct Creation Modal State (Zero conversational prompt box)
   const [pollTitle, setPollTitle] = useState<string>("");
   const [pollMode, setPollMode] = useState<PollMode>("dates_and_hours");
-  const [selectedDates, setSelectedDates] = useState<string[]>([
-    "2026-10-27",
-    "2026-10-28",
-    "2026-10-29",
-  ]);
+  const [selectedDates, setSelectedDates] =
+    useState<string[]>(DEFAULT_DATES);
   const [startHour, setStartHour] = useState<number>(9);
   const [endHour, setEndHour] = useState<number>(17);
 
@@ -120,7 +130,6 @@ export function SlottedAppShell({
   const [visibilityMode, setVisibilityMode] =
     useState<VisibilityMode>("public");
   const [allowIfNeeded, setAllowIfNeeded] = useState<boolean>(true);
-  const [deadlineAt, setDeadlineAt] = useState<string>("");
 
   // Creation microanimation state before routing
   const [creatingState, setCreatingState] = useState<
@@ -130,34 +139,37 @@ export function SlottedAppShell({
     null
   );
 
-  useEffect(() => {
-    setAdvancedOpen(initialAdvancedOpen);
-  }, [initialAdvancedOpen]);
-
-  // Fetch live polls from server API on mount + merge local storage
+  // Load only the requested poll, or the viewer-scoped device collection.
   useEffect(() => {
     let cancelled = false;
 
     async function loadFromServer() {
       try {
-        const res = await fetch("/api/polls", { cache: "no-store" });
+        const endpoint =
+          initialViewMode === "poll" && initialSlug
+            ? `/api/polls/${encodeURIComponent(initialSlug)}`
+            : "/api/polls";
+        const res = await fetch(endpoint, { cache: "no-store" });
+        if (res.status === 404) {
+          if (!cancelled) setPollLoadState("not-found");
+          return;
+        }
         if (res.ok) {
           const data = await res.json();
-          if (!cancelled && Array.isArray(data.polls) && data.polls.length > 0) {
-            const list: PollData[] = data.polls;
-            if (initialLocked && initialSlug) {
-              setPolls(
-                list.map((p) =>
-                  p.slug === initialSlug ? { ...p, status: "LOCKED" } : p
-                )
-              );
-            } else {
-              setPolls(list);
-            }
+          if (!cancelled) {
+            const list: PollData[] = data.poll
+              ? [data.poll as PollData]
+              : Array.isArray(data.polls)
+                ? data.polls
+                : [];
+            setPolls(list);
+            setPollLoadState("ready");
           }
+        } else if (!cancelled) {
+          setPollLoadState("error");
         }
       } catch {
-        // Fallback to localStorage if offline
+        if (!cancelled) setPollLoadState("error");
       }
     }
 
@@ -165,17 +177,19 @@ export function SlottedAppShell({
 
     try {
       const g = localStorage.getItem(STORAGE_KEY_GUEST);
-      if (g) setGuestName(g);
       const tz = localStorage.getItem(STORAGE_KEY_TZ);
-      if (tz && TIMEZONE_OPTIONS.some((o) => o.id === tz)) {
-        setViewerTimezone(tz);
-      }
+      queueMicrotask(() => {
+        if (g) setGuestName(g);
+        if (tz && TIMEZONE_OPTIONS.some((o) => o.id === tz)) {
+          setViewerTimezone(tz);
+        }
+      });
     } catch {}
 
     return () => {
       cancelled = true;
     };
-  }, [initialLocked, initialSlug]);
+  }, [initialSlug, initialViewMode]);
 
   // Global pointerup for calendar drag
   useEffect(() => {
@@ -189,12 +203,12 @@ export function SlottedAppShell({
     setPollMode(nextMode);
     if (nextMode === "full_days") {
       setDurationMinutes(1440); // Default 1 full day (or user can pick 2d / 3d)
-      setSelectedDates(["2026-10-30", "2026-10-31", "2026-11-01"]);
+      setSelectedDates(WEEKEND_DATES);
     } else {
       if (durationMinutes >= 1440) {
         setDurationMinutes(30);
       }
-      setSelectedDates(["2026-10-27", "2026-10-28", "2026-10-29"]);
+      setSelectedDates(DEFAULT_DATES);
     }
   };
 
@@ -203,31 +217,25 @@ export function SlottedAppShell({
   ) => {
     if (preset === "call_30m") {
       setPollMode("dates_and_hours");
-      setSelectedDates(["2026-10-27", "2026-10-28", "2026-10-29"]);
+      setSelectedDates(DEFAULT_DATES);
       setStartHour(9);
       setEndHour(17);
       setDurationMinutes(30);
       if (!pollTitle) setPollTitle("30m Intro Call");
     } else if (preset === "dinner_2h") {
       setPollMode("dates_and_hours");
-      setSelectedDates(["2026-10-28", "2026-10-29", "2026-10-30"]);
+      setSelectedDates(DEFAULT_DATES);
       setStartHour(18);
       setEndHour(22);
       setDurationMinutes(120);
       if (!pollTitle) setPollTitle("Team Dinner");
     } else if (preset === "weekend_trip") {
       setPollMode("full_days");
-      setSelectedDates(["2026-10-30", "2026-10-31", "2026-11-01"]);
+      setSelectedDates(WEEKEND_DATES);
       setDurationMinutes(4320); // 3 days
       if (!pollTitle) setPollTitle("Weekend Group Trip");
     } else if (preset === "next_week") {
-      setSelectedDates([
-        "2026-11-02",
-        "2026-11-03",
-        "2026-11-04",
-        "2026-11-05",
-        "2026-11-06",
-      ]);
+      setSelectedDates(WEEKDAY_DATES);
     }
   };
 
@@ -256,7 +264,7 @@ export function SlottedAppShell({
   };
 
   const activePoll = useMemo(() => {
-    return polls.find((p) => p.slug === activeSlug) || polls[0];
+    return polls.find((p) => p.slug === activeSlug) || null;
   }, [polls, activeSlug]);
 
   const handleUpdatePoll = (updated: PollData) => {
@@ -270,10 +278,13 @@ export function SlottedAppShell({
   };
 
   const handleDeletePoll = async (slug: string, id: string) => {
-    if (polls.length <= 1) return;
-    setPolls((prev) => prev.filter((p) => p.id !== id));
+    if (!window.confirm("Delete this poll? This cannot be undone.")) return;
     try {
-      await fetch(`/api/polls/${slug}`, { method: "DELETE" });
+      const response = await fetch(`/api/polls/${slug}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+      });
+      if (response.ok) setPolls((prev) => prev.filter((p) => p.id !== id));
     } catch {}
   };
 
@@ -299,8 +310,6 @@ export function SlottedAppShell({
     const finalTitle =
       pollTitle.trim() ||
       (pollMode === "full_days" ? "Group Trip" : "Team Sync");
-    const sessionId = getOrCreateGuestSessionId();
-
     try {
       const res = await fetch("/api/polls", {
         method: "POST",
@@ -309,7 +318,6 @@ export function SlottedAppShell({
           title: finalTitle,
           pollMode,
           hostName: guestName || "Alex",
-          guestSessionId: sessionId,
           timezone: viewerTimezone,
           candidateDates: selectedDates,
           dayStartHour: startHour,
@@ -320,16 +328,16 @@ export function SlottedAppShell({
             passwordProtected && accessPassword.trim()
               ? accessPassword.trim()
               : null,
+          passwordProtected,
           visibilityMode,
           allowIfNeeded,
-          deadlineAt: deadlineAt || null,
+          deadlineAt: null,
         }),
       });
 
       if (res.ok) {
-        const { poll, hostToken } = (await res.json()) as {
+        const { poll } = (await res.json()) as {
           poll: PollData;
-          hostToken: string;
         };
 
         // Copy share link immediately
@@ -337,21 +345,17 @@ export function SlottedAppShell({
           typeof window !== "undefined"
             ? `${window.location.origin}/p/${poll.slug}`
             : `https://slotted.app/p/${poll.slug}`;
+        let copied = false;
         if (typeof navigator !== "undefined" && navigator.clipboard) {
-          navigator.clipboard.writeText(shareUrl).catch(() => {});
+          try {
+            await navigator.clipboard.writeText(shareUrl);
+            copied = true;
+          } catch {}
         }
-
-        // Save hostToken locally
-        try {
-          const rawTokens = localStorage.getItem(STORAGE_KEY_HOST_TOKENS);
-          const map = rawTokens ? JSON.parse(rawTokens) : {};
-          map[poll.slug] = hostToken;
-          localStorage.setItem(STORAGE_KEY_HOST_TOKENS, JSON.stringify(map));
-        } catch {}
 
         setPolls((prev) => [poll, ...prev]);
         setCreatedSlugPreview(poll.slug);
-        setCreatingState("copied");
+        setCreatingState(copied ? "copied" : "idle");
 
         // Show satisfying microanimation for 550ms then transition to the new poll page
         setTimeout(() => {
@@ -368,13 +372,17 @@ export function SlottedAppShell({
     setCreatingState("idle");
   };
 
-  const handleCopyPollLink = (slug: string, id: string) => {
+  const handleCopyPollLink = async (slug: string, id: string) => {
     const url =
       typeof window !== "undefined"
         ? `${window.location.origin}/p/${slug}`
         : `https://slotted.app/p/${slug}`;
-    if (typeof navigator !== "undefined" && navigator.clipboard) {
-      navigator.clipboard.writeText(url).catch(() => {});
+    if (!navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      window.prompt("Copy the link below.", url);
+      return;
     }
     setCopiedPollId(id);
     setTimeout(() => setCopiedPollId(null), 1800);
@@ -383,10 +391,69 @@ export function SlottedAppShell({
   const currentTzOption =
     TIMEZONE_OPTIONS.find((t) => t.id === viewerTimezone) || TIMEZONE_OPTIONS[1];
 
+  const reloadActivePoll = async () => {
+    if (!activeSlug) return;
+    const response = await fetch(`/api/polls/${encodeURIComponent(activeSlug)}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("Couldn’t load this poll");
+    const data = await response.json();
+    setPolls([data.poll as PollData]);
+    setPollLoadState("ready");
+  };
+
   /* =========================================================
      POLL VIEW (/p/[slug]) — Matching Rounded-[24px] Design System
      ========================================================= */
   if (viewMode === "poll") {
+    if (pollLoadState === "loading") {
+      return (
+        <main
+          className="grid min-h-dvh place-items-center bg-[#F6F5F2] px-4"
+          role="status"
+        >
+          <div className="w-full max-w-md animate-pulse space-y-3">
+            <div className="h-8 w-48 rounded-lg bg-[#DDDAD1]" />
+            <div className="h-48 rounded-2xl bg-white" />
+            <span className="sr-only">Loading poll…</span>
+          </div>
+        </main>
+      );
+    }
+    if (pollLoadState === "error") {
+      return (
+        <main className="grid min-h-dvh place-items-center bg-[#F6F5F2] px-4">
+          <div className="max-w-md text-center">
+            <h1 className="text-2xl font-semibold">Couldn’t load this poll</h1>
+            <button
+              type="button"
+              onClick={() => void reloadActivePoll()}
+              className="mt-6 min-h-11 rounded-lg bg-[#171715] px-5 text-sm font-semibold text-white"
+            >
+              Try again
+            </button>
+          </div>
+        </main>
+      );
+    }
+    if (pollLoadState === "not-found" || !activePoll) {
+      return (
+        <main className="grid min-h-dvh place-items-center bg-[#F6F5F2] px-4">
+          <div className="max-w-md text-center">
+            <h1 className="text-2xl font-semibold">Poll not found</h1>
+            <p className="mt-2 text-sm text-[#56534D]">
+              This poll isn’t here. Check the link and try again.
+            </p>
+            <Link
+              href="/"
+              className="mt-6 inline-flex min-h-11 items-center rounded-lg bg-[#171715] px-5 text-sm font-semibold text-white"
+            >
+              Create a new poll
+            </Link>
+          </div>
+        </main>
+      );
+    }
     return (
       <div className="min-h-dvh flex flex-col bg-[#F6F5F2] text-[#141413]">
         <header className="border-b border-[#E4E2DA] bg-[#F6F5F2]">
@@ -431,6 +498,7 @@ export function SlottedAppShell({
                   {polls.length}
                 </span>
               </Link>
+              <IdentityMenu name={guestName} />
             </div>
           </div>
         </header>
@@ -446,6 +514,7 @@ export function SlottedAppShell({
             activeBrush={activeBrush}
             onChangeBrush={setActiveBrush}
             justCreated={justCreatedFlag}
+            onReloadPoll={reloadActivePoll}
           />
         </main>
       </div>
@@ -462,10 +531,13 @@ export function SlottedAppShell({
       {/* FIRST SIGHT: FULLSCREEN DARKENED LANDSCAPE + DIRECT CREATION MODAL ONLY */}
       <section className="relative flex min-h-dvh w-full flex-col justify-between overflow-hidden">
         {/* Fullscreen Landscape Painting */}
-        <img
+        <Image
           src="/hero-landscape.jpg"
           alt=""
           aria-hidden="true"
+          fill
+          priority
+          sizes="100vw"
           className="pointer-events-none absolute inset-0 h-full w-full object-cover object-center select-none"
         />
 
@@ -511,6 +583,7 @@ export function SlottedAppShell({
                 {currentTzOption.shortCode} · {currentTzOption.utcLabel}
               </span>
             </div>
+            <IdentityMenu name={guestName} />
           </div>
         </header>
 

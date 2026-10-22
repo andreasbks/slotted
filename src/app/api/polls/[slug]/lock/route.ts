@@ -1,12 +1,20 @@
 import { NextResponse } from "next/server";
-import { updatePollLockState } from "@/lib/store-server";
+import { assertSameOrigin, readHostToken } from "@/lib/auth-server";
+import { requireHost, updatePollLockState } from "@/lib/store-server";
 
 export async function POST(
   request: Request,
   context: { params: Promise<{ slug: string }> }
 ) {
   try {
+    assertSameOrigin(request);
     const { slug } = await context.params;
+    if (!(await requireHost(slug, await readHostToken(slug)))) {
+      return NextResponse.json(
+        { error: "Host access required" },
+        { status: 403 }
+      );
+    }
     const body = await request.json();
     const updated = await updatePollLockState(slug, {
       status: body.status === "OPEN" ? "OPEN" : "LOCKED",

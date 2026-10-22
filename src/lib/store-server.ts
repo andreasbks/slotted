@@ -1,16 +1,11 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { neon } from "@neondatabase/serverless";
-import { drizzle } from "drizzle-orm/neon-http";
-import { eq, desc } from "drizzle-orm";
-import * as schema from "@/db/schema";
 import {
   AvailabilityState,
   INITIAL_POLLS,
   PollData,
   PollMode,
-  PollParticipant,
   VisibilityMode,
 } from "@/lib/slotted-data";
 
@@ -18,22 +13,27 @@ const LOCAL_DB_DIR = path.join(process.cwd(), ".data");
 const LOCAL_DB_FILE = path.join(LOCAL_DB_DIR, "slotted-db.json");
 
 export function hashSecret(raw: string): string {
-  return crypto.createHash("sha256").update(raw).digest("hex");
-}
-
-function getNeonDb() {
-  const url = process.env.DATABASE_URL;
-  if (!url || !url.startsWith("postgres")) return null;
-  try {
-    const sql = neon(url);
-    return drizzle(sql, { schema });
-  } catch {
-    return null;
-  }
+  const pepper = process.env.SLOTTED_TOKEN_PEPPER || "slotted-local-development";
+  return crypto
+    .createHmac("sha256", pepper)
+    .update(`slotted:v1:${raw}`)
+    .digest("hex");
 }
 
 interface LocalDbFileShape {
   polls: PollData[];
+  accessGrants?: Array<{
+    slug: string;
+    tokenHash: string;
+    expiresAt: string;
+  }>;
+  recoveryCredentials?: Array<{
+    selector: string;
+    verifierHash: string;
+    deviceHash: string;
+    createdAt: string;
+    usedAt?: string;
+  }>;
 }
 
 function readLocalDb(): LocalDbFileShape {
@@ -44,6 +44,8 @@ function readLocalDb(): LocalDbFileShape {
     if (!fs.existsSync(LOCAL_DB_FILE)) {
       const initial: LocalDbFileShape = {
         polls: JSON.parse(JSON.stringify(INITIAL_POLLS)),
+        accessGrants: [],
+        recoveryCredentials: [],
       };
       fs.writeFileSync(LOCAL_DB_FILE, JSON.stringify(initial, null, 2), "utf8");
       return initial;
@@ -60,136 +62,98 @@ function readLocalDb(): LocalDbFileShape {
 }
 
 function writeLocalDb(data: LocalDbFileShape): void {
-  try {
-    if (!fs.existsSync(LOCAL_DB_DIR)) {
-      fs.mkdirSync(LOCAL_DB_DIR, { recursive: true });
-    }
-    fs.writeFileSync(LOCAL_DB_FILE, JSON.stringify(data, null, 2), "utf8");
-  } catch {}
+  if (!fs.existsSync(LOCAL_DB_DIR)) {
+    fs.mkdirSync(LOCAL_DB_DIR, { recursive: true });
+  }
+  const temp = `${LOCAL_DB_FILE}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  fs.writeFileSync(temp, JSON.stringify(data, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  fs.renameSync(temp, LOCAL_DB_FILE);
 }
 
-function sanitizePollForClient(poll: PollData): PollData {
-  const { accessPassword, hostTokenHash, ...rest } = poll;
+function sanitizePollForClient(
+  poll: PollData,
+  deviceHash?: string,
+  canManagePoll = false
+): PollData {
+  const rest = { ...poll };
+  delete rest.accessPassword;
+  delete rest.hostTokenHash;
   return {
     ...rest,
-    hasPassword: Boolean(accessPassword || poll.hasPassword),
+    hasPassword: Boolean(poll.accessPassword || poll.hasPassword),
+    canManagePoll,
+    viewerParticipantId:
+      poll.participants.find((participant) => participant.guestSessionId === deviceHash)
+        ?.id || null,
+    participants: poll.participants.map((participant) => ({
+      ...participant,
+      guestSessionId: "",
+      clerkUserId: undefined,
+      isCurrentUser: participant.guestSessionId === deviceHash,
+    })),
   };
 }
 
 export async function listAllPolls(): Promise<PollData[]> {
-  const db = getNeonDb();
-  if (db) {
-    try {
-      const rows = await db
-        .select()
-        .from(schema.polls)
-        .orderBy(desc(schema.polls.createdAt));
-      const allParticipants = await db.select().from(schema.pollParticipants);
-      return rows.map((r) => {
-        const parts: PollParticipant[] = allParticipants
-          .filter((p) => p.pollId === r.id)
-          .map((p) => ({
-            id: p.id,
-            guestSessionId: p.guestSessionId,
-            clerkUserId: p.clerkUserId,
-            name: p.name,
-            city: p.city,
-            timezone: p.timezone,
-            avatarColor: p.avatarColor,
-            slots: p.slots || {},
-          }));
-        return {
-          id: r.id,
-          slug: r.slug,
-          title: r.title,
-          description: r.description,
-          location: r.location,
-          pollMode: r.pollMode,
-          hostName: r.hostName,
-          hostClerkUserId: r.hostClerkUserId,
-          timezone: r.timezone,
-          candidateDates: r.candidateDates,
-          dayStartHour: r.dayStartHour,
-          dayEndHour: r.dayEndHour,
-          slotMinutes: r.slotMinutes,
-          durationMinutes: r.durationMinutes,
-          hasPassword: Boolean(r.accessPasswordHash),
-          visibilityMode: r.visibilityMode,
-          allowIfNeeded: r.allowIfNeeded,
-          deadlineAt: r.deadlineAt,
-          status: r.status,
-          lockedSlotStart: r.lockedSlotStart || undefined,
-          lockedSlotEnd: r.lockedSlotEnd || undefined,
-          lockedLocation: r.lockedLocation || undefined,
-          createdAt: r.createdAt.toISOString(),
-          participants: parts,
-        };
-      });
-    } catch {
-      // Fallback to local file DB if Neon table isn't migrated yet
-    }
-  }
-
   const local = readLocalDb();
-  return local.polls.map(sanitizePollForClient);
+  return local.polls.map((poll) => sanitizePollForClient(poll));
 }
 
 export async function getPollBySlug(slug: string): Promise<PollData | null> {
-  const db = getNeonDb();
-  if (db) {
-    try {
-      const rows = await db
-        .select()
-        .from(schema.polls)
-        .where(eq(schema.polls.slug, slug));
-      const r = rows[0];
-      if (r) {
-        const parts = await db
-          .select()
-          .from(schema.pollParticipants)
-          .where(eq(schema.pollParticipants.pollId, r.id));
-        return {
-          id: r.id,
-          slug: r.slug,
-          title: r.title,
-          description: r.description,
-          location: r.location,
-          pollMode: r.pollMode,
-          hostName: r.hostName,
-          hostClerkUserId: r.hostClerkUserId,
-          timezone: r.timezone,
-          candidateDates: r.candidateDates,
-          dayStartHour: r.dayStartHour,
-          dayEndHour: r.dayEndHour,
-          slotMinutes: r.slotMinutes,
-          durationMinutes: r.durationMinutes,
-          hasPassword: Boolean(r.accessPasswordHash),
-          visibilityMode: r.visibilityMode,
-          allowIfNeeded: r.allowIfNeeded,
-          deadlineAt: r.deadlineAt,
-          status: r.status,
-          lockedSlotStart: r.lockedSlotStart || undefined,
-          lockedSlotEnd: r.lockedSlotEnd || undefined,
-          lockedLocation: r.lockedLocation || undefined,
-          createdAt: r.createdAt.toISOString(),
-          participants: parts.map((p) => ({
-            id: p.id,
-            guestSessionId: p.guestSessionId,
-            clerkUserId: p.clerkUserId,
-            name: p.name,
-            city: p.city,
-            timezone: p.timezone,
-            avatarColor: p.avatarColor,
-            slots: p.slots || {},
-          })),
-        };
-      }
-    } catch {}
-  }
-
   const local = readLocalDb();
   const found = local.polls.find((p) => p.slug === slug);
   return found ? sanitizePollForClient(found) : null;
+}
+
+export async function getPollForViewer(
+  slug: string,
+  deviceHash?: string,
+  hostToken?: string
+): Promise<PollData | null> {
+  const local = readLocalDb();
+  const found = local.polls.find((poll) => poll.slug === slug);
+  if (!found) return null;
+  const canManage = Boolean(
+    hostToken &&
+      found.hostTokenHash &&
+      crypto.timingSafeEqual(
+        Buffer.from(found.hostTokenHash),
+        Buffer.from(hashSecret(hostToken))
+      )
+  );
+  return sanitizePollForClient(found, deviceHash, canManage);
+}
+
+export async function listPollsForViewer(
+  deviceHash?: string,
+  hostTokens: Record<string, string> = {}
+): Promise<PollData[]> {
+  if (!deviceHash && Object.keys(hostTokens).length === 0) return [];
+  const local = readLocalDb();
+  return local.polls
+    .filter((poll) => {
+      const isParticipant = poll.participants.some(
+        (participant) => participant.guestSessionId === deviceHash
+      );
+      const hostToken = hostTokens[poll.slug];
+      return (
+        isParticipant ||
+        Boolean(hostToken && poll.hostTokenHash === hashSecret(hostToken))
+      );
+    })
+    .map((poll) =>
+      sanitizePollForClient(
+        poll,
+        deviceHash,
+        Boolean(
+          hostTokens[poll.slug] &&
+            poll.hostTokenHash === hashSecret(hostTokens[poll.slug])
+        )
+      )
+    );
 }
 
 export interface CreatePollInput {
@@ -199,7 +163,7 @@ export interface CreatePollInput {
   pollMode?: PollMode;
   hostName?: string;
   hostClerkUserId?: string | null;
-  guestSessionId?: string;
+  deviceHash: string;
   timezone: string;
   candidateDates: string[];
   dayStartHour: number;
@@ -215,19 +179,17 @@ export interface CreatePollInput {
 export async function createNewPoll(
   input: CreatePollInput
 ): Promise<{ poll: PollData; hostToken: string }> {
-  const id = `pol_${Date.now().toString(36)}_${Math.random()
-    .toString(36)
-    .slice(2, 6)}`;
+  const id = `pol_${crypto.randomUUID()}`;
   const slugBase = (input.title || "poll")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-|-$/g, "")
     .slice(0, 28);
-  const slug = `${slugBase || "poll"}-${Math.floor(100 + Math.random() * 899)}`;
-  const hostToken = `ht_${crypto.randomBytes(12).toString("hex")}`;
+  const slug = `${slugBase || "poll"}-${crypto.randomBytes(5).toString("hex")}`;
+  const hostToken = crypto.randomBytes(32).toString("base64url");
   const hostTokenHash = hashSecret(hostToken);
   const passwordClean = input.accessPassword?.trim() || null;
-  const passwordHash = passwordClean ? hashSecret(passwordClean) : null;
+  const passwordHash = passwordClean ? hashPassword(passwordClean) : null;
   const pollMode: PollMode =
     input.pollMode === "full_days" ? "full_days" : "dates_and_hours";
 
@@ -236,8 +198,7 @@ export async function createNewPoll(
     slug,
     title: input.title.trim() || "Untitled Poll",
     description: input.description?.trim() || "",
-    location:
-      input.location?.trim() || `meet.slotted.app/${slugBase || "room"}`,
+    location: input.location?.trim() || "",
     pollMode,
     hostName: input.hostName?.trim() || "Organizer",
     hostClerkUserId: input.hostClerkUserId || null,
@@ -257,13 +218,12 @@ export async function createNewPoll(
     allowIfNeeded: input.allowIfNeeded ?? true,
     deadlineAt: input.deadlineAt || null,
     status: "OPEN",
-    lockedLocation:
-      input.location?.trim() || `meet.slotted.app/${slugBase || "room"}`,
+    lockedLocation: input.location?.trim() || "",
     createdAt: new Date().toISOString(),
     participants: [
       {
         id: `p_${Date.now().toString(36)}`,
-        guestSessionId: input.guestSessionId || "slt_guest_local",
+        guestSessionId: input.deviceHash,
         clerkUserId: input.hostClerkUserId || null,
         name: input.hostName?.trim() || "Alex",
         city: "NYC",
@@ -275,59 +235,20 @@ export async function createNewPoll(
     ],
   };
 
-  const db = getNeonDb();
-  if (db) {
-    try {
-      await db.insert(schema.polls).values({
-        id: newPoll.id,
-        slug: newPoll.slug,
-        title: newPoll.title,
-        description: newPoll.description,
-        location: newPoll.location || "",
-        pollMode: newPoll.pollMode || "dates_and_hours",
-        hostClerkUserId: newPoll.hostClerkUserId || null,
-        hostTokenHash,
-        hostName: newPoll.hostName,
-        timezone: newPoll.timezone,
-        candidateDates: newPoll.candidateDates,
-        dayStartHour: newPoll.dayStartHour,
-        dayEndHour: newPoll.dayEndHour,
-        slotMinutes: newPoll.slotMinutes,
-        durationMinutes: newPoll.durationMinutes,
-        accessPasswordHash: passwordHash,
-        visibilityMode: newPoll.visibilityMode,
-        allowIfNeeded: newPoll.allowIfNeeded,
-        deadlineAt: newPoll.deadlineAt || null,
-        status: "OPEN",
-        lockedLocation: newPoll.lockedLocation || null,
-      });
-
-      const hostPart = newPoll.participants[0];
-      await db.insert(schema.pollParticipants).values({
-        id: hostPart.id,
-        pollId: newPoll.id,
-        guestSessionId: hostPart.guestSessionId,
-        clerkUserId: hostPart.clerkUserId || null,
-        name: hostPart.name,
-        city: hostPart.city,
-        timezone: hostPart.timezone,
-        avatarColor: hostPart.avatarColor,
-        slots: hostPart.slots,
-      });
-    } catch {}
-  }
-
   const local = readLocalDb();
   local.polls.unshift(newPoll);
   writeLocalDb(local);
 
-  return { poll: sanitizePollForClient(newPoll), hostToken };
+  return {
+    poll: sanitizePollForClient(newPoll, input.deviceHash, true),
+    hostToken,
+  };
 }
 
 export async function upsertParticipantVote(
   slug: string,
   payload: {
-    guestSessionId: string;
+    deviceHash: string;
     name: string;
     timezone: string;
     city?: string;
@@ -339,8 +260,14 @@ export async function upsertParticipantVote(
   if (pollIdx === -1) return null;
 
   const poll = local.polls[pollIdx];
+  if (poll.status !== "OPEN") {
+    throw new Error("This poll is locked");
+  }
+  if (poll.deadlineAt && Date.now() >= new Date(poll.deadlineAt).getTime()) {
+    throw new Error("The response window has closed");
+  }
   const existingIdx = poll.participants.findIndex(
-    (p) => p.guestSessionId === payload.guestSessionId
+    (p) => p.guestSessionId === payload.deviceHash
   );
 
   const colors = ["#10B981", "#141413", "#2563EB", "#D97706", "#7C3AED"];
@@ -354,10 +281,8 @@ export async function upsertParticipantVote(
     };
   } else {
     poll.participants.push({
-      id: `p_${Date.now().toString(36)}_${Math.random()
-        .toString(36)
-        .slice(2, 5)}`,
-      guestSessionId: payload.guestSessionId,
+      id: `p_${crypto.randomUUID()}`,
+      guestSessionId: payload.deviceHash,
       name: payload.name.trim() || "Guest",
       city: payload.city || "NYC",
       timezone: payload.timezone || poll.timezone,
@@ -367,7 +292,7 @@ export async function upsertParticipantVote(
   }
 
   writeLocalDb(local);
-  return sanitizePollForClient(poll);
+  return sanitizePollForClient(poll, payload.deviceHash);
 }
 
 export async function updatePollLockState(
@@ -411,14 +336,186 @@ export async function verifyPollPassword(
   const poll = local.polls.find((p) => p.slug === slug);
   if (!poll) return false;
   if (!poll.accessPassword) return true;
-  return poll.accessPassword === hashSecret(passwordAttempt.trim());
+  return verifyPassword(passwordAttempt.trim(), poll.accessPassword);
 }
 
-export async function deletePollBySlug(slug: string): Promise<boolean> {
+export async function deletePollBySlug(
+  slug: string,
+  hostToken: string
+): Promise<boolean> {
   const local = readLocalDb();
-  if (local.polls.length <= 1) return false;
+  const poll = local.polls.find((item) => item.slug === slug);
+  if (!poll || !isHostTokenValid(poll, hostToken)) return false;
   const next = local.polls.filter((p) => p.slug !== slug);
   local.polls = next;
   writeLocalDb(local);
   return true;
+}
+
+function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16);
+  const derived = crypto.scryptSync(password, salt, 32);
+  return `scrypt$${salt.toString("base64url")}$${derived.toString("base64url")}`;
+}
+
+function verifyPassword(password: string, stored: string): boolean {
+  if (!stored.startsWith("scrypt$")) {
+    const legacy = crypto.createHash("sha256").update(password).digest("hex");
+    return crypto.timingSafeEqual(Buffer.from(legacy), Buffer.from(stored));
+  }
+  const [, saltRaw, digestRaw] = stored.split("$");
+  const expected = Buffer.from(digestRaw, "base64url");
+  const actual = crypto.scryptSync(
+    password,
+    Buffer.from(saltRaw, "base64url"),
+    expected.length
+  );
+  return crypto.timingSafeEqual(expected, actual);
+}
+
+export function isHostTokenValid(poll: PollData, hostToken?: string): boolean {
+  if (!hostToken || !poll.hostTokenHash) return false;
+  const expected = Buffer.from(poll.hostTokenHash);
+  const actual = Buffer.from(hashSecret(hostToken));
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+
+export async function requireHost(
+  slug: string,
+  hostToken?: string
+): Promise<boolean> {
+  const local = readLocalDb();
+  const poll = local.polls.find((item) => item.slug === slug);
+  return Boolean(poll && isHostTokenValid(poll, hostToken));
+}
+
+export async function issueAccessGrant(
+  slug: string
+): Promise<{ token: string; expiresAt: Date }> {
+  const local = readLocalDb();
+  const token = crypto.randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  local.accessGrants = (local.accessGrants || []).filter(
+    (grant) => new Date(grant.expiresAt).getTime() > Date.now()
+  );
+  local.accessGrants.push({
+    slug,
+    tokenHash: hashSecret(token),
+    expiresAt: expiresAt.toISOString(),
+  });
+  writeLocalDb(local);
+  return { token, expiresAt };
+}
+
+export async function hasValidAccessGrant(
+  slug: string,
+  token?: string
+): Promise<boolean> {
+  if (!token) return false;
+  const local = readLocalDb();
+  const digest = hashSecret(token);
+  return Boolean(
+    local.accessGrants?.some(
+      (grant) =>
+        grant.slug === slug &&
+        grant.tokenHash === digest &&
+        new Date(grant.expiresAt).getTime() > Date.now()
+    )
+  );
+}
+
+export async function issueRecoveryKey(
+  deviceHash: string
+): Promise<string> {
+  const local = readLocalDb();
+  const selector = crypto.randomBytes(8).toString("hex").toUpperCase();
+  const verifier = crypto.randomBytes(16).toString("base64url").toUpperCase();
+  local.recoveryCredentials = (local.recoveryCredentials || []).filter(
+    (credential) => credential.deviceHash !== deviceHash || credential.usedAt
+  );
+  local.recoveryCredentials.push({
+    selector,
+    verifierHash: hashSecret(verifier),
+    deviceHash,
+    createdAt: new Date().toISOString(),
+  });
+  writeLocalDb(local);
+  return `S1-${selector}-${verifier}`;
+}
+
+export async function redeemRecoveryKey(
+  key: string
+): Promise<string | null> {
+  const normalized = key.trim().toUpperCase();
+  const [, selector, verifier] = normalized.split("-");
+  if (!selector || !verifier) return null;
+  const local = readLocalDb();
+  const credential = local.recoveryCredentials?.find(
+    (item) => item.selector === selector && !item.usedAt
+  );
+  if (!credential) return null;
+  const expected = Buffer.from(credential.verifierHash);
+  const actual = Buffer.from(hashSecret(verifier));
+  if (
+    expected.length !== actual.length ||
+    !crypto.timingSafeEqual(expected, actual)
+  ) {
+    return null;
+  }
+  credential.usedAt = new Date().toISOString();
+  writeLocalDb(local);
+  return credential.deviceHash;
+}
+
+export async function rotateDeviceIdentity(
+  previousHash: string,
+  nextHash: string
+): Promise<void> {
+  const local = readLocalDb();
+  for (const poll of local.polls) {
+    for (const participant of poll.participants) {
+      if (participant.guestSessionId === previousHash) {
+        participant.guestSessionId = nextHash;
+      }
+    }
+  }
+  for (const credential of local.recoveryCredentials || []) {
+    if (credential.deviceHash === previousHash && !credential.usedAt) {
+      credential.deviceHash = nextHash;
+    }
+  }
+  writeLocalDb(local);
+}
+
+export async function claimDeviceIdentity(
+  guestHash: string,
+  accountHash: string
+): Promise<void> {
+  const local = readLocalDb();
+  for (const poll of local.polls) {
+    const guest = poll.participants.find(
+      (participant) => participant.guestSessionId === guestHash
+    );
+    const account = poll.participants.find(
+      (participant) => participant.guestSessionId === accountHash
+    );
+    if (!guest) continue;
+    if (!account) {
+      guest.guestSessionId = accountHash;
+      continue;
+    }
+    // One principal may have only one response per poll. Keep the account row
+    // and only fill fields that are still empty; never union availability.
+    if (Object.keys(account.slots).length === 0) account.slots = guest.slots;
+    if (!account.name.trim()) account.name = guest.name;
+    poll.participants = poll.participants.filter(
+      (participant) => participant.id !== guest.id
+    );
+  }
+  for (const credential of local.recoveryCredentials || []) {
+    if (credential.deviceHash === guestHash && !credential.usedAt) {
+      credential.usedAt = new Date().toISOString();
+    }
+  }
+  writeLocalDb(local);
 }

@@ -1,21 +1,48 @@
 import { NextResponse } from "next/server";
-import { createNewPoll, listAllPolls } from "@/lib/store-server";
+import {
+  assertSameOrigin,
+  hostCookieName,
+  newDeviceToken,
+  readDeviceToken,
+  secureCookie,
+} from "@/lib/auth-server";
+import {
+  createNewPoll,
+  hashSecret,
+  listPollsForViewer,
+} from "@/lib/store-server";
+import { getClerkIdentityHash } from "@/lib/optional-auth-server";
 
 export async function GET() {
-  const polls = await listAllPolls();
+  const deviceToken = await readDeviceToken();
+  const identityHash = await getClerkIdentityHash();
+  const polls = await listPollsForViewer(
+    identityHash || (deviceToken ? hashSecret(deviceToken) : undefined)
+  );
   return NextResponse.json({ polls });
 }
 
 export async function POST(request: Request) {
   try {
+    assertSameOrigin(request);
     const body = await request.json();
+    if (body.passwordProtected && !String(body.accessPassword || "").trim()) {
+      return NextResponse.json(
+        { error: "Enter a password or choose Anyone with the link." },
+        { status: 400 }
+      );
+    }
+    const existingDeviceToken = await readDeviceToken();
+    const deviceToken = existingDeviceToken || newDeviceToken();
+    const clerkHash = await getClerkIdentityHash();
+    const identityHash = clerkHash || hashSecret(deviceToken);
     const { poll, hostToken } = await createNewPoll({
       title: body.title || "Untitled Poll",
       description: body.description || "",
       location: body.location || "",
       pollMode: body.pollMode === "full_days" ? "full_days" : "dates_and_hours",
       hostName: body.hostName || "Alex",
-      guestSessionId: body.guestSessionId || "slt_guest_local",
+      deviceHash: identityHash,
       timezone: body.timezone || "America/New_York",
       candidateDates: Array.isArray(body.candidateDates)
         ? body.candidateDates
@@ -30,7 +57,19 @@ export async function POST(request: Request) {
       deadlineAt: body.deadlineAt || null,
     });
 
-    return NextResponse.json({ poll, hostToken }, { status: 201 });
+    const response = NextResponse.json({ poll }, { status: 201 });
+    if (!existingDeviceToken && !clerkHash) {
+      response.cookies.set(
+        "__Host-slotted-device",
+        deviceToken,
+        secureCookie
+      );
+    }
+    response.cookies.set(hostCookieName(poll.slug), hostToken, {
+      ...secureCookie,
+      maxAge: 400 * 24 * 60 * 60,
+    });
+    return response;
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Failed to create poll" },
